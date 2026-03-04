@@ -1,0 +1,19 @@
+server:
+  port: 8082
+spring:
+  application:
+    name: items
+  datasource:
+    url: jdbc:mysql://localhost:3306/items?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+  jpa:
+    show-sql: true
+clients:
+  products:
+    url: http://localhost:8081/products
+logging:
+  pattern:
+    console: "%clr(%d{yyyy-MM-dd HH:mm:ss}){cyan} %highlight(%-5level) %msg%n"
+  level:
+    com.example.items.infra.clients: DEBUG
