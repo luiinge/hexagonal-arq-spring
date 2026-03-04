@@ -9,9 +9,26 @@ spring:
     password: root
   jpa:
     show-sql: true
+
+  cloud:
+    discovery:
+      client:
+        simple:
+          instances:
+            # OJO! el balanceador simple no reenruta en caso de error
+            product-service: # Nombre del servicio registrado por Feign/WebClient
+              - uri: http://localhost:8081 # aqui solo puede ir el host, el path se ha definido en el cliente Feign/WebClient
+              - uri: http://localhost:8091
+
 clients:
   products:
-    url: http://localhost:8081/products
+    type: webclient  # feign | webclient
+
+# esto es para cuando le ponemos la url directamente en el cliente Feign, pero como estamos usando balanceo de carga no es necesario
+#clients:
+#  products:
+#    url: http://localhost:8081/products
+
 logging:
   pattern:
     console: "%clr(%d{yyyy-MM-dd HH:mm:ss}){cyan} %highlight(%-5level) %msg%n"
