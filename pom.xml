@@ -14,6 +14,8 @@
         <module>commons</module>
         <module>starter</module>
         <module>items</module>
+        <module>eureka-server</module>
+        <module>gateway</module>
     </modules>
 
 

@@ -1,0 +1,23 @@
+project:
+  organization: Curso Spring
+  name: Microservices API Tests
+  test-suites:
+    - name: smoke
+      tag-expression: "smoke"
+
+plugins:
+  - gherkin
+  - rest
+
+configuration:
+  core.resourcePath: features
+  rest:
+    baseURL: http://localhost:8090
+
+profiles:
+  gateway:
+    rest.baseURL: http://localhost:8090
+  products-direct:
+    rest.baseURL: http://localhost:8081
+  items-direct:
+    rest.baseURL: http://localhost:8082
