@@ -2,7 +2,7 @@ server:
   port: 8082
 spring:
   application:
-    name: items
+    name: items-service  # Nombre del servicio que se registrará en Eureka
   datasource:
     url: jdbc:mysql://localhost:3306/items?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
     username: root
@@ -10,15 +10,18 @@ spring:
   jpa:
     show-sql: true
 
-  cloud:
-    discovery:
-      client:
-        simple:
-          instances:
-            # OJO! el balanceador simple no reenruta en caso de error
-            product-service: # Nombre del servicio registrado por Feign/WebClient
-              - uri: http://localhost:8081 # aqui solo puede ir el host, el path se ha definido en el cliente Feign/WebClient
-              - uri: http://localhost:8091
+# Si queremos usar el balanceo de carga simple de Spring Cloud, debemos configurar las instancias de los servicios a los
+# que queremos acceder, pero como estamos usando Eureka para el descubrimiento
+# de servicios, no es necesario configurar las instancias manualmente, Eureka se encargará de eso por nosotros.
+#  cloud:
+#    discovery:
+#      client:
+#        simple:
+#          instances:
+#            # OJO! el balanceador simple no reenruta en caso de error
+#            product-service: # Nombre del servicio registrado por Feign/WebClient
+#              - uri: http://localhost:8081 # aqui solo puede ir el host, el path se ha definido en el cliente Feign/WebClient
+#              - uri: http://localhost:8091
 
 clients:
   products:
@@ -34,3 +37,11 @@ logging:
     console: "%clr(%d{yyyy-MM-dd HH:mm:ss}){cyan} %highlight(%-5level) %msg%n"
   level:
     com.example.items.infra.clients: DEBUG
+
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/  # URL of the Eureka server
+    register-with-eureka: true  # Register this service with Eureka
+    fetch-registry: true  # Fetch the registry from Eureka to discover other services

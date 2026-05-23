@@ -8,10 +8,11 @@ Proyecto de aprendizaje que implementa una arquitectura de microservicios con **
 
 ```
 spring/
-├── starter/     # POM padre con dependencias compartidas
-├── commons/     # Infraestructura y utilidades compartidas
-├── products/    # Microservicio de productos (puerto 8081)
-└── items/       # Microservicio de items (puerto 8082)
+├── starter/        # POM padre con dependencias compartidas
+├── commons/        # Infraestructura y utilidades compartidas
+├── products/       # Microservicio de productos (puerto 8081)
+├── items/          # Microservicio de items (puerto 8082)
+└── eureka-server/  # Servidor de descubrimiento de servicios (puerto 8761)
 ```
 
 ### `starter`
@@ -40,6 +41,9 @@ Microservicio que compone items a partir de productos remotos (producto + cantid
 | `GET /items` | Lista todos los items |
 | `GET /items/{id}` | Obtiene un item por ID |
 
+### `eureka-server`
+Servidor de descubrimiento de servicios (Netflix Eureka). Los microservicios `products` e `items` se registran en él al arrancar. Debe iniciarse antes que el resto de servicios.
+
 ---
 
 ## Arquitectura hexagonal
@@ -62,18 +66,85 @@ Una de las metas del proyecto es comparar distintas formas de resolver el mismo 
 
 ### Comunicación entre servicios (`items` → `products`)
 
-| Implementación | Clase | Estado |
+Ambas implementaciones se conectan a través del mismo puerto SPI (`ProductService`), por lo que cambiar de una a otra no requiere modificar el dominio. Se selecciona con la propiedad `clients.products.type` en `application.yaml`:
+
+| Implementación | Clase | `clients.products.type` |
 |----------------|-------|--------|
-| **Spring Cloud OpenFeign** | `ProductServiceFeignClient` | Activa |
-| **Spring WebFlux WebClient** | `ProductServiceWebClient` | Pendiente |
+| **Spring Cloud OpenFeign** | `ProductServiceFeignAdapter` | `feign` |
+| **Spring WebFlux WebClient** | `ProductServiceWebClient` | `webclient` |
 
-Ambas se conectan a través del mismo puerto SPI (`ProductService`), por lo que cambiar de una a otra no requiere modificar el dominio.
+> `ProductServiceWebClient` usa `.block()` para adaptarse a la interfaz síncrona, lo que rompe la naturaleza reactiva de WebClient pero permite intercambiarlo con Feign sin cambiar el dominio.
 
-### Balanceo de carga
+#### Feign vs WebClient
 
-Se usa **Spring Cloud LoadBalancer** con descubrimiento simple (sin Eureka). Las instancias se configuran en `application.yaml`:
+**Feign** es un cliente **declarativo**: defines una interfaz con anotaciones y Spring genera la implementación. No escribes código de llamada HTTP, solo el contrato:
 
+```java
+@FeignClient(name = "product-service", path = "/products")
+public interface ProductServiceFeignClient {
+    @GetMapping
+    List<ProductDto> findAll();
+
+    @GetMapping("/{id}")
+    ProductDto findById(@PathVariable Long id);
+}
+```
+
+**WebClient** es un cliente **programático y reactivo**: construyes la petición paso a paso. Está diseñado para programación non-blocking, aunque aquí se usa `.block()` para adaptarlo a la interfaz síncrona del dominio:
+
+```java
+return clientBuilder.build().get()
+    .uri("http://product-service/products")
+    .retrieve()
+    .bodyToFlux(ProductDto.class)
+    .collectList()
+    .block(); // rompe la reactividad para cumplir la interfaz síncrona
+```
+
+| Aspecto | Feign | WebClient |
+|---|---|---|
+| Estilo | Declarativo (interfaz + anotaciones) | Programático (fluent API) |
+| Modelo de ejecución | Síncrono (bloqueante) | Reactivo (non-blocking) por defecto |
+| Verbosidad | Mínima | Mayor |
+| Control de la petición | Limitado | Total (headers, timeouts, retry…) |
+| Streaming / SSE | No soporta bien | Soporte nativo (`bodyToFlux`) |
+| Manejo de errores | Vía `ErrorDecoder` | Vía `.onStatus()` / operadores reactivos |
+
+**¿Cuándo usar cada uno?** Feign es más simple y legible para apps Spring MVC clásicas. WebClient es la opción recomendada para apps reactivas (Spring WebFlux), cuando se necesita streaming, o cuando se requiere control fino sobre timeouts y reintentos. Spring no recomienda Feign para nuevos proyectos.
+
+### Balanceo de carga y descubrimiento de servicios
+
+Se usa **Netflix Eureka** como servidor de descubrimiento y **Spring Cloud LoadBalancer** para el balanceo. Los servicios se identifican por nombre lógico (`product-service`) sin necesidad de configurar URLs concretas.
+
+Para levantar varias instancias de `products` y ver el balanceo en acción:
+
+```bash
+# Instancia 1 (puerto por defecto 8081)
+./mvnw spring-boot:run -pl products
+
+# Instancia 2
+./mvnw spring-boot:run -pl products -Dspring-boot.run.arguments=--server.port=8091
+```
+
+#### Con Eureka vs sin Eureka
+
+Tanto Feign como WebClient siempre usan el **nombre lógico** del servicio — ese código no cambia. Lo que cambia es quién resuelve ese nombre: un yaml estático o el registro de Eureka.
+
+**Sin Eureka — opción A: URL fija** (sin balanceo):
 ```yaml
+# items/application.yaml
+clients:
+  products:
+    url: http://localhost:8081/products
+```
+```java
+@FeignClient(name = "product-service", url = "${clients.products.url}")
+```
+Una sola instancia hardcodeada. Si cae, no hay fallback.
+
+**Sin Eureka — opción B: LoadBalancer simple con instancias fijas**:
+```yaml
+# items/application.yaml
 spring:
   cloud:
     discovery:
@@ -84,16 +155,50 @@ spring:
               - uri: http://localhost:8081
               - uri: http://localhost:8091
 ```
+El cliente usa el nombre lógico y Spring LoadBalancer reparte entre las URIs configuradas. Pero la lista es estática: añadir una instancia nueva requiere tocar el yaml y reiniciar.
 
-Para levantar varias instancias de `products` en puertos distintos:
+**Con Eureka — descubrimiento dinámico:**
 
-```bash
-# Instancia 1 (puerto por defecto)
-./mvnw spring-boot:run -pl products
+Los servicios se registran al arrancar y se dan de baja al parar. El cliente consulta el registro en cada llamada.
 
-# Instancia 2
-./mvnw spring-boot:run -pl products -Dspring-boot.run.arguments=--server.port=8091
+Configuración del servidor (`eureka-server/application.yaml`):
+```yaml
+server:
+  port: 8761
+eureka:
+  client:
+    register-with-eureka: false   # es el servidor, no se registra a sí mismo
+    fetch-registry: false
 ```
+
+Configuración de cada microservicio:
+```yaml
+spring:
+  application:
+    name: product-service         # nombre con el que se registra en Eureka
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+    register-with-eureka: true
+    fetch-registry: true
+```
+
+Para que `WebClient` pueda resolver nombres de Eureka a través del LoadBalancer, el bean necesita `@LoadBalanced` (en `WebClientConfig` del módulo `commons`):
+```java
+@Bean
+@LoadBalanced
+public WebClient.Builder webClientBuilder() { ... }
+```
+
+| Aspecto | Sin Eureka (estático) | Con Eureka (dinámico) |
+|---|---|---|
+| Registro de instancias | Manual en `application.yaml` | Automático al arrancar |
+| Añadir/quitar instancias | Requiere cambiar config y reiniciar | En caliente, sin tocar config |
+| Detección de caídas | No (el balanceador simple no redirige en error) | Sí (heartbeat periódico) |
+| Infraestructura extra | Ninguna | Requiere levantar `eureka-server` |
+| Útil en entorno local/simple | Sí | Añade complejidad innecesaria |
+| Útil en producción / múltiples instancias | No escala | Diseñado para esto |
 
 ---
 
@@ -113,7 +218,7 @@ Los errores del servicio remoto se propagan de forma estructurada:
 |-----------|-----|
 | Java 21 | Lenguaje |
 | Spring Boot 3.4.2 | Framework base |
-| Spring Cloud 2024.0.0 | OpenFeign, LoadBalancer |
+| Spring Cloud 2024.0.0 | OpenFeign, LoadBalancer, Eureka |
 | Spring WebFlux | WebClient (alternativa a Feign) |
 | Spring Data JPA | Persistencia |
 | MySQL | Base de datos |
@@ -131,12 +236,17 @@ Los errores del servicio remoto se propagan de forma estructurada:
 ## Arrancar el proyecto
 
 ```bash
-# Compilar todos los módulos
+# Compilar módulos de soporte primero
 ./mvnw install -pl commons,starter
 
-# Arrancar products
+# 1. Arrancar Eureka (debe ser el primero)
+./mvnw spring-boot:run -pl eureka-server
+
+# 2. Arrancar products
 ./mvnw spring-boot:run -pl products
 
-# Arrancar items
+# 3. Arrancar items
 ./mvnw spring-boot:run -pl items
 ```
+
+El panel de Eureka está disponible en `http://localhost:8761` una vez arrancado.
