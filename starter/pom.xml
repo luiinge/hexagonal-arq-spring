@@ -90,11 +90,23 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Eureka Client -->
+        <!-- Eureka Client / Service Discovery -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
         </dependency>
+
+        <!-- Resilience4j / Circuit Breaker -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
+        </dependency>
+        <!-- AOP para Resilience4j -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+       
 
         <dependency>
             <groupId>com.example</groupId>
@@ -115,6 +127,8 @@
             <version>${lombok.version}</version>
             <scope>provided</scope>
         </dependency>
+
+
 
         <!-- Test -->
         <dependency>

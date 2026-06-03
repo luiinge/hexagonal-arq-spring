@@ -1,6 +1,7 @@
 package com.example.products.app.controllers;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -29,6 +30,18 @@ public class ProductController {
 
     @GetMapping("/{id}")
     public ProductDto findById(@PathVariable Long id) {
+        // simulate an error and a timeout to test the circuit breaker
+        if (id == 10L) {
+            throw new RuntimeException("Simulated error");
+        }
+        if (id == 11L) {
+            try {
+                TimeUnit.SECONDS.sleep(5);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
         return productService.findById(id)
                 .map(productDtoMapper::toDto)
                 .orElseThrow(() -> new EntityNotFoundException("Product not found with id: %s", id));

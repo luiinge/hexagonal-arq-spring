@@ -234,6 +234,134 @@ public WebClient.Builder webClientBuilder() { ... }
 | Útil en entorno local/simple | Sí | Añade complejidad innecesaria |
 | Útil en producción / múltiples instancias | No escala | Diseñado para esto |
 
+### Resiliencia: Circuit Breaker
+
+Un **circuit breaker** protege a un servicio de fallos en cascada: si el servicio al que llamas empieza a fallar o a ir lento, el circuit breaker se "abre" y devuelve una respuesta alternativa sin esperar — evitando que el hilo quede bloqueado y que el problema se propague.
+
+Hay tres estados:
+
+| Estado | Qué ocurre |
+|--------|-----------|
+| **Closed** (normal) | Las llamadas pasan. Se cuentan los fallos. |
+| **Open** (circuito abierto) | Las llamadas se cortan inmediatamente. Se ejecuta el fallback. |
+| **Half-open** (prueba) | Se dejan pasar unas pocas llamadas para ver si el servicio se recuperó. |
+
+En este proyecto hay dos enfoques implementados.
+
+#### Enfoque 1 — `@CircuitBreaker` en `items` (anotación Resilience4j)
+
+Protege la llamada que hace `items` al servicio `products`. Se configura a nivel de método con la anotación de Resilience4j:
+
+```java
+// ItemController.java
+@CircuitBreaker(name = "itemService", fallbackMethod = "fallbackItem")
+@GetMapping("/{id}")
+public ItemDto findById(@PathVariable Long id) {
+    return itemService.findById(id)
+        .map(mapper::toDto)
+        .orElseThrow(() -> new EntityNotFoundException("Item not found with id: %s", id));
+}
+
+private Optional<Item> fallbackItem(Long id, Throwable throwable) {
+    // devuelve un item por defecto cuando el circuit breaker está abierto o hay error
+    return Optional.of(new Item(new Product(id, "Default Product on error", BigDecimal.ZERO, ...), 0));
+}
+```
+
+La instancia `itemService` referencia la configuración `default` definida en `commons`:
+
+```yaml
+# items/application.yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      itemService:
+        base-config: default
+  timelimiter:
+    instances:
+      itemService:
+        base-config: default
+```
+
+#### Enfoque 2 — Filtro `CircuitBreaker` en el gateway
+
+Protege la ruta hacia `product-service` directamente desde el gateway, antes de que la petición llegue al servicio. No requiere cambiar código en `items` ni en `products`:
+
+```yaml
+# gateway/application.yaml
+spring:
+  cloud:
+    gateway:
+      server.webflux.routes:
+        - id: product-service
+          uri: lb://product-service
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=1
+            - name: CircuitBreaker
+              args:
+                name: productService
+                statusCodes: "500,502,503,504"
+```
+
+El nombre `productService` referencia la instancia Resilience4j configurada en `gateway/application.yaml`. Los `statusCodes` indican qué respuestas HTTP se contabilizan como fallos.
+
+#### Configuración compartida (`commons`)
+
+Los valores por defecto del circuit breaker están centralizados en `commons/src/main/resources/resilience4j-defaults.yaml` y cada servicio los importa con una línea:
+
+```yaml
+# en el application.yaml de cada servicio
+spring:
+  config:
+    import: classpath:resilience4j-defaults.yaml
+```
+
+```yaml
+# commons/resilience4j-defaults.yaml
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        register-health-indicator: true
+        sliding-window-size: 10        # ventana de las últimas N llamadas
+        minimum-number-of-calls: 5     # mínimo de llamadas antes de evaluar
+        failure-rate-threshold: 50     # % de fallos para abrir el circuito
+        wait-duration-in-open-state: 10000  # ms en estado Open antes de pasar a Half-open
+  timelimiter:
+    configs:
+      default:
+        timeout-duration: 2000         # ms máximo de espera por respuesta
+```
+
+> El gateway tiene su propia copia de estos valores en `gateway/application.yaml` porque no usa el módulo `commons` como dependencia.
+
+#### Simulación de errores en `products`
+
+`ProductController` incluye dos endpoints de prueba para disparar el circuit breaker sin necesidad de infraestructura caída:
+
+| Petición | Comportamiento |
+|----------|---------------|
+| `GET /products/10` (o vía gateway `/api/products/10`) | Lanza `RuntimeException` — cuenta como fallo |
+| `GET /products/11` (o vía gateway `/api/products/11`) | Duerme 5s — supera el timeout de 2s y cuenta como fallo |
+
+Haciendo suficientes llamadas fallidas (`minimum-number-of-calls: 5`, `failure-rate-threshold: 50%`) el circuito se abre y las siguientes llamadas devuelven el fallback directamente sin llegar a `products`.
+
+#### Comparativa de enfoques
+
+| Aspecto | `@CircuitBreaker` en `items` | Filtro en gateway |
+|---------|------------------------------|-------------------|
+| Dónde actúa | Dentro del servicio llamante | En el punto de entrada de red |
+| Granularidad | Por método Java | Por ruta HTTP |
+| Fallback | Lógica Java arbitraria | Solo redirección o respuesta de error |
+| Requiere cambiar el servicio | Sí | No |
+| Útil para | Proteger una dependencia concreta con lógica de negocio | Proteger toda una ruta sin tocar código |
+
+Ambos pueden coexistir: el gateway puede abrir primero el circuito para peticiones externas, mientras que `items` tiene su propio circuit breaker para las llamadas internas que hace a `products`.
+
+---
+
 ### Gateway + Eureka: cómo encajan
 
 El gateway incluye `spring-cloud-starter-netflix-eureka-client`, por lo que **también es un cliente de Eureka**: al arrancar se suscribe al registro y mantiene una caché local que se refresca periódicamente mediante heartbeats.

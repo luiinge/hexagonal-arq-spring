@@ -3,6 +3,8 @@ server:
 spring:
   application:
     name: items-service  # Nombre del servicio que se registrará en Eureka
+  config:
+    import: classpath:resilience4j-defaults.yaml # Importamos la configuración por defecto de Resilience4j, que se encuentra en el módulo commons, para que esté disponible en el servicio de items.
   datasource:
     url: jdbc:mysql://localhost:3306/items?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
     username: root
@@ -45,3 +47,16 @@ eureka:
       defaultZone: http://localhost:8761/eureka/  # URL of the Eureka server
     register-with-eureka: true  # Register this service with Eureka
     fetch-registry: true  # Fetch the registry from Eureka to discover other services
+
+# La configuracion 'default' de Resilience4j la tenemos definida en el archivo resilience4j-defaults.yaml, pero si queremos configurar una instancia concreta, lo hacemos aqui.
+# del modulo commons, y se importa en el application.yaml de cada servicio que quiera usarlo, 
+# en este caso el items-service.
+resilience4j: 
+  circuitbreaker:
+    instances:
+      itemService:
+        base-config: default
+  timelimiter:
+    instances:
+      itemService:
+        base-config: default

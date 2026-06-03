@@ -17,6 +17,12 @@ spring:
             - Path=/api/products/**  # Route requests starting with /api/products to the product service
           filters:
             - StripPrefix=1  # Strip /api prefix before forwarding to the product service
+             # Add circuit breaker filter
+            - name: CircuitBreaker
+              args:
+                name: productService
+                statusCodes: "500,502,503,504" # Consider these status codes as failures for the circuit breaker
+                
 
         # Items Service Route
         - id: items-service
@@ -32,3 +38,28 @@ eureka:
             defaultZone: http://localhost:8761/eureka/  # URL of the Eureka server
       register-with-eureka: true  # Register this service with Eureka
       fetch-registry: true  # Fetch the registry from Eureka to discover other services
+
+
+# Resilience4j configuration for circuit breakers and time limiters, 
+# using the default configuration defined in resilience4j-defaults.yaml,
+# which is imported in the application.yaml of each service that wants to use it,
+# in this case the items-service.
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        register-health-indicator: true
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10000 # 10 seconds
+    instances:
+      productService:
+        base-config: default
+  timelimiter:
+    configs:
+      default:
+        timeoutDuration: 2000 # 2 seconds
+    instances:
+      productService:
+        base-config: default
