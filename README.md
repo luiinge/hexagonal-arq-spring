@@ -13,7 +13,9 @@ spring/
 ├── products/       # Microservicio de productos (puerto 8081)
 ├── items/          # Microservicio de items (puerto 8082)
 ├── eureka-server/  # Servidor de descubrimiento de servicios (puerto 8761)
-└── gateway/        # API Gateway (puerto 8090)
+├── gateway/        # API Gateway (puerto 8090)
+├── config-server/  # Servidor centralizado de configuración (puerto 8888)
+└── config-repo/    # Repositorio local con los archivos de configuración
 ```
 
 ### `starter`
@@ -44,6 +46,39 @@ Microservicio que compone items a partir de productos remotos (producto + cantid
 
 ### `eureka-server`
 Servidor de descubrimiento de servicios (Netflix Eureka). Los microservicios `products` e `items` se registran en él al arrancar. Debe iniciarse antes que el resto de servicios.
+
+### `config-server`
+Servidor centralizado de configuración basado en **Spring Cloud Config Server**. Sirve archivos de configuración a los microservicios al arrancar, de forma que la configuración vive fuera del JAR y puede actualizarse sin redesplegar.
+
+Usa el perfil `native`, que lee los archivos directamente del sistema de ficheros local (el directorio `config-repo/`). En producción se usaría el perfil `git` apuntando a un repositorio Git remoto.
+
+```yaml
+# config-server/application.yaml
+spring:
+  profiles:
+    active: native
+  cloud:
+    config:
+      server:
+        native:
+          search-locations: file:///home/luis/cursos/spring/config-repo
+```
+
+La anotación `@EnableConfigServer` en la clase principal activa el servidor:
+
+```java
+@SpringBootApplication
+@EnableConfigServer
+public class ConfigServerApplication { ... }
+```
+
+### `config-repo`
+Directorio que actúa como repositorio de configuración. Cada archivo `{nombre-servicio}.yaml` contiene la configuración externalizada de ese servicio. El Config Server sirve el archivo cuyo nombre coincida con el `spring.application.name` del cliente.
+
+```
+config-repo/
+└── items.yaml    # configuración externalizada del servicio items
+```
 
 ### `gateway`
 Punto de entrada único para todos los clientes externos. Implementado con **Spring Cloud Gateway** (basado en WebFlux). Expone los servicios bajo una ruta unificada en el puerto 8090, ocultando los puertos internos.
@@ -362,6 +397,110 @@ Ambos pueden coexistir: el gateway puede abrir primero el circuito para peticion
 
 ---
 
+### Configuración centralizada: Spring Cloud Config
+
+En lugar de que cada microservicio tenga toda su configuración en su propio `application.yaml`, **Spring Cloud Config** permite centralizar los valores en un servidor externo. Los servicios consultan ese servidor al arrancar y cargan su configuración desde allí.
+
+Esto resuelve varios problemas habituales en microservicios:
+- Cambiar un valor (una URL, un timeout) en 10 servicios requeriría redesplegar 10 JARs.
+- Los archivos de configuración con credenciales no deberían estar en el código fuente.
+- Es difícil saber qué configuración está activa en producción en un momento dado.
+
+#### Cómo funciona
+
+```
+items-service :8082
+    │
+    │  al arrancar: "dame la configuración de 'items-service'"
+    ▼
+config-server :8888
+    │
+    │  busca items.yaml en config-repo/
+    ▼
+config-repo/items.yaml  (sistema de ficheros local)
+```
+
+El nombre del archivo en `config-repo/` debe coincidir exactamente con el `spring.application.name` del microservicio cliente.
+
+#### Configuración del servidor
+
+```yaml
+# config-server/application.yaml
+server:
+  port: 8888
+spring:
+  profiles:
+    active: native          # lee del sistema de ficheros (no de Git)
+  cloud:
+    config:
+      server:
+        native:
+          search-locations: file:///ruta/a/config-repo
+```
+
+> El perfil `native` es conveniente en local. En producción se usa el perfil `git` apuntando a un repositorio remoto, lo que añade historial de cambios, ramas por entorno y auditoría.
+
+#### Configuración del cliente
+
+Cada microservicio declara en su `application.yaml` de dónde importar la configuración:
+
+```yaml
+spring:
+  application:
+    name: items-service     # debe coincidir con el nombre del archivo en config-repo
+  config:
+    import: optional:configserver:http://localhost:8888
+```
+
+El prefijo `optional:` hace que el servicio arranque igualmente aunque el Config Server no esté disponible, usando los valores locales como fallback. Sin él, el servicio falla al arrancar si el servidor no responde.
+
+> **Forma alternativa (clásica, pre-Spring Boot 2.4):** algunos proyectos usan `spring.cloud.config.uri: http://localhost:8888`. Es equivalente pero no soporta el prefijo `optional:`, por lo que el servicio siempre falla si el servidor no está disponible.
+
+#### Endpoint de refresco en caliente
+
+Sin reiniciar el servicio, es posible recargar la configuración llamando al endpoint de Actuator `/actuator/refresh` con un POST:
+
+```bash
+curl -X POST http://localhost:8082/actuator/refresh
+```
+
+Para que este endpoint esté disponible hay que exponerlo en `application.yaml`:
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, refresh
+```
+
+Y los beans que usen propiedades del Config Server deben anotarse con `@RefreshScope` para que Spring los recree con los nuevos valores:
+
+```java
+@RestController
+@RefreshScope
+public class ItemsController { ... }
+```
+
+Sin `@RefreshScope`, el endpoint responde 200 pero los beans ya construidos conservan los valores anteriores.
+
+#### Consultar la configuración directamente
+
+El Config Server expone un endpoint REST para verificar qué configuración serviría a un cliente:
+
+```
+GET http://localhost:8888/{application}/{profile}
+```
+
+Ejemplos:
+
+| URL | Qué devuelve |
+|-----|-------------|
+| `http://localhost:8888/items-service/default` | Configuración de `items-service` con perfil `default` |
+| `http://localhost:8888/items-service/prod` | Configuración con perfil `prod` (si existe `items-service-prod.yaml`) |
+
+---
+
 ### Gateway + Eureka: cómo encajan
 
 El gateway incluye `spring-cloud-starter-netflix-eureka-client`, por lo que **también es un cliente de Eureka**: al arrancar se suscribe al registro y mantiene una caché local que se refresca periódicamente mediante heartbeats.
@@ -416,7 +555,7 @@ Los errores del servicio remoto se propagan de forma estructurada:
 |-----------|-----|
 | Java 21 | Lenguaje |
 | Spring Boot 3.4.2 | Framework base |
-| Spring Cloud 2024.0.0 | OpenFeign, LoadBalancer, Eureka, Gateway |
+| Spring Cloud 2024.0.0 | OpenFeign, LoadBalancer, Eureka, Gateway, Config |
 | Spring WebFlux | WebClient (alternativa a Feign) |
 | Spring Data JPA | Persistencia |
 | MySQL | Base de datos |
@@ -437,21 +576,25 @@ Los errores del servicio remoto se propagan de forma estructurada:
 # Compilar módulos de soporte primero
 ./mvnw install -pl commons,starter
 
-# 1. Arrancar Eureka (debe ser el primero)
+# 1. Arrancar el Config Server (debe ser el primero si los servicios no usan optional:)
+./mvnw spring-boot:run -pl config-server
+
+# 2. Arrancar Eureka
 ./mvnw spring-boot:run -pl eureka-server
 
-# 2. Arrancar products
+# 3. Arrancar products
 ./mvnw spring-boot:run -pl products
 
-# 3. Arrancar items
+# 4. Arrancar items
 ./mvnw spring-boot:run -pl items
 
-# 4. Arrancar el gateway
+# 5. Arrancar el gateway
 ./mvnw spring-boot:run -pl gateway
 ```
 
 | Servicio | URL |
 |----------|-----|
+| Config Server | http://localhost:8888/items-service/default |
 | Eureka (panel) | http://localhost:8761 |
 | Products (directo) | http://localhost:8081/products |
 | Items (directo) | http://localhost:8082/items |

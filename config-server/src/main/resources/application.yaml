@@ -1,0 +1,23 @@
+server:
+    port: 8888
+
+spring:
+    application:
+        name: config-server
+    profiles:
+        # activando el perfil native para que el servidor de configuración busque 
+        # los archivos de configuración en el sistema de archivos local.
+        # En un entorno de producción, podrías usar el perfil git para obtener las 
+        # configuraciones desde un repositorio Git.
+        active: native
+
+
+    cloud:
+        config:
+            server:
+               # Configuración para el perfil native, indicando la ubicación de los 
+               # archivos de configuración en el sistema de archivos local.
+               native:
+                  search-locations: file:///home/luis/cursos/spring/config-repo
+            #  git:
+            #    uri: 

@@ -16,6 +16,7 @@
         <module>items</module>
         <module>eureka-server</module>
         <module>gateway</module>
+        <module>config-server</module>
     </modules>
 
 

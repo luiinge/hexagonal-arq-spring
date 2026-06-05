@@ -1,10 +1,21 @@
 server:
   port: 8082
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+        - health
+        - info
+        - refresh # para poder refrescar la configuración en caliente sin necesidad de reiniciar el servicio, esto es muy útil cuando usamos un servidor de configuración, ya que podemos cambiar la configuración en el servidor de configuración y luego refrescarla en el servicio sin necesidad de reiniciarlo.
+        - env # para poder ver las variables de entorno del servicio, esto es muy útil para depurar problemas de configuración, ya que podemos ver las variables de entorno que tiene el servicio en tiempo de ejecución.
+
 spring:
   application:
     name: items-service  # Nombre del servicio que se registrará en Eureka
   config:
-    import: classpath:resilience4j-defaults.yaml # Importamos la configuración por defecto de Resilience4j, que se encuentra en el módulo commons, para que esté disponible en el servicio de items.
+    #import: classpath:resilience4j-defaults.yaml # Importamos la configuración por defecto de Resilience4j, que se encuentra en el módulo commons, para que esté disponible en el servicio de items.
+    import: optional:configserver:http://localhost:8888 # Importamos la configuración desde el servidor de configuración, si el servidor de configuración no está disponible, el servicio de items seguirá funcionando con la configuración local, pero si el servidor de configuración está disponible, se cargará la configuración desde allí, y se sobreescribirá la configuración local.  
   datasource:
     url: jdbc:mysql://localhost:3306/items?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
     username: root
