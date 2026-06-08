@@ -179,7 +179,44 @@ return clientBuilder.build().get()
 | Streaming / SSE | No soporta bien | Soporte nativo (`bodyToFlux`) |
 | Manejo de errores | Vía `ErrorDecoder` | Vía `.onStatus()` / operadores reactivos |
 
-**¿Cuándo usar cada uno?** Feign es más simple y legible para apps Spring MVC clásicas. WebClient es la opción recomendada para apps reactivas (Spring WebFlux), cuando se necesita streaming, o cuando se requiere control fino sobre timeouts y reintentos. Spring no recomienda Feign para nuevos proyectos.
+**¿Cuándo usar cada uno?** Feign es más simple y legible para apps Spring MVC clásicas. WebClient es la opción recomendada para apps reactivas (Spring WebFlux), cuando se necesita streaming, o cuando se requiere control fino sobre timeouts y reintentos. Spring Framework 6 introdujo `@HttpExchange` como alternativa declarativa nativa a Feign, sin dependencias adicionales de Spring Cloud.
+
+#### `@HttpExchange` — cliente declarativo nativo (Spring Framework 6+)
+
+Similar a Feign pero sin dependencias de Spring Cloud. Se define una interfaz anotada y Spring genera el cliente a partir de un `RestClient` (síncrono) o `WebClient` (reactivo):
+
+```java
+// definición del cliente — igual que Feign
+@HttpExchange("/products")
+public interface ProductServiceHttpClient {
+
+    @GetExchange
+    List<ProductDto> findAll();
+
+    @GetExchange("/{id}")
+    ProductDto findById(@PathVariable Long id);
+}
+```
+
+```java
+// registro del bean — aquí se elige el transporte
+@Configuration
+public class HttpClientConfig {
+
+    @Bean
+    public ProductServiceHttpClient productServiceHttpClient() {
+        RestClient restClient = RestClient.builder()
+            .baseUrl("http://product-service")
+            .build();
+        HttpServiceProxyFactory factory = HttpServiceProxyFactory
+            .builderFor(RestClientAdapter.create(restClient))
+            .build();
+        return factory.createClient(ProductServiceHttpClient.class);
+    }
+}
+```
+
+La interfaz es idéntica a la de Feign; la diferencia está en el bean de configuración. Sustituyendo `RestClientAdapter` por `WebClientAdapter` el mismo cliente pasa a ser reactivo sin cambiar la interfaz.
 
 ### Balanceo de carga y descubrimiento de servicios
 
@@ -394,6 +431,108 @@ Haciendo suficientes llamadas fallidas (`minimum-number-of-calls: 5`, `failure-r
 | Útil para | Proteger una dependencia concreta con lógica de negocio | Proteger toda una ruta sin tocar código |
 
 Ambos pueden coexistir: el gateway puede abrir primero el circuito para peticiones externas, mientras que `items` tiene su propio circuit breaker para las llamadas internas que hace a `products`.
+
+---
+
+### Versionado de APIs
+
+El versionado aplica al **contrato público** de un servicio — los endpoints que expone a otros servicios o al exterior. No toda evolución de la API requiere una nueva versión.
+
+#### Cuándo versionar
+
+| Tipo de cambio | ¿Requiere nueva versión? |
+|----------------|--------------------------|
+| Eliminar un campo o endpoint | Sí (breaking) |
+| Cambiar el tipo o semántica de un campo | Sí (breaking) |
+| Añadir un campo opcional | No |
+| Añadir un endpoint nuevo | No |
+
+#### Cómo versionar: versión en la URL
+
+La opción más común y explícita:
+
+```
+GET /v1/products
+GET /v2/products
+```
+
+Alternativas menos habituales: header `Accept: application/vnd.myapi.v2+json` o query param `?version=2`. La URL es preferible porque es visible, cacheable y no requiere que el cliente manipule headers.
+
+#### Organización del código
+
+Cada versión tiene sus propios DTOs y controller. El dominio interno no cambia — el versionado es solo una preocupación de la capa de presentación:
+
+```
+app/
+  controllers/
+    v1/ProductController.java   →  @RequestMapping("/v1/products")
+    v2/ProductController.java   →  @RequestMapping("/v2/products")
+dto/
+  v1/ProductDto.java
+  v2/ProductDto.java            # puede tener campos distintos
+```
+
+Ambos controllers delegan en el mismo `ProductService`. Solo difieren en cómo mapean la respuesta:
+
+```java
+// v1
+public v1.ProductDto findById(...) {
+    return v1Mapper.toDto(productService.findById(id));
+}
+
+// v2 — mismo servicio de dominio, distinto mapper/DTO
+public v2.ProductDto findById(...) {
+    return v2Mapper.toDto(productService.findById(id));
+}
+```
+
+#### Contrato como artifact: `products-api`
+
+En un ecosistema de microservicios, una práctica recomendable es publicar el contrato de cada servicio como un módulo independiente (`products-api`). Los consumidores dependen de ese artifact, no del servicio completo:
+
+```
+products-api:1.0  →  v1.ProductDto  (consumidores en v1)
+products-api:2.0  →  v2.ProductDto  (consumidores migrados a v2)
+```
+
+Esto permite que cada consumidor migre a su ritmo, y que el equipo de `products` mantenga ambas versiones activas durante la transición.
+
+`products-api` solo contiene DTOs y opcionalmente la interfaz del cliente Feign. Las entidades de dominio (`Product`) nunca deben compartirse — cada servicio tiene su propia visión del dominio.
+
+#### Migración de no-versionado a versionado
+
+Cuando una API empieza sin versión en la URL (`/products`) y se introduce la primera versión con breaking changes, hay dos opciones:
+
+- **No añadir `/v1` retroactivamente**: `/products` sigue funcionando como versión implícita y se publica `/v2/products`. Los consumidores existentes no tocan nada.
+- **Redirigir `/products` → `/v2/products`**: más limpio a largo plazo. La URL sin versión queda como alias de la versión vigente.
+
+La segunda opción es preferible, y la redirección debe hacerse en el **gateway**, no en el servicio. El servicio solo expone `/products` — es el gateway quien gestiona el contrato público y las reglas de routing:
+
+```yaml
+routes:
+  # ruta activa: /api/v2/products/** → product-service
+  - id: products-v2
+    uri: lb://product-service
+    predicates:
+      - Path=/api/v2/products/**
+    filters:
+      - StripPrefix=2
+
+  # redirección permanente: /api/products/** → /api/v2/products/**
+  - id: products-legacy
+    uri: no://op
+    predicates:
+      - Path=/api/products/**
+    filters:
+      - RewritePath=/api/products/(?<segment>.*), /api/v2/products/${segment}
+      - RedirectTo=301, https://gateway-host
+```
+
+El `301` indica redirección permanente, lo que permite a los consumidores y proxies intermedios actualizar la URL cacheada. Centralizar esto en el gateway significa que si en el futuro `/v2` también queda obsoleto, el cambio es solo de configuración, sin tocar código de negocio.
+
+#### Cuándo empezar a versionar
+
+No versionar desde el día uno. Añadir `v2` solo cuando haya un cambio breaking real con consumidores activos. El sobreingeniería de versiones antes de tener consumidores es tiempo perdido — y cada versión nueva obliga a reimplementar todos los endpoints del recurso aunque solo haya cambiado uno.
 
 ---
 
