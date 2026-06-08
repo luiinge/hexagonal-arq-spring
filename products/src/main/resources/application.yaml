@@ -3,6 +3,10 @@ server:
 spring:
     application:
         name: product-service  # Nombre del servicio que se registrará en Eureka
+        spring:
+    config:
+      import: optional:configserver:http://localhost:8888 # Importamos la configuración desde el servidor de configuración, si el servidor de configuración no está disponible, el servicio de items seguirá funcionando con la configuración local, pero si el servidor de configuración está disponible, se cargará la configuración desde allí, y se sobreescribirá la configuración local.  
+
     datasource:
         url: jdbc:mysql://localhost:3306/products?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
         username: root
