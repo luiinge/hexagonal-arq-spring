@@ -15,7 +15,7 @@ import lombok.Setter;
 @Entity
 @Table(name = "products")
 @Getter @Setter
-public class ProductEntity extends AuditedEntity {
+public class ProductEntity extends com.example.commons.infra.persistence.entities.AuditedEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

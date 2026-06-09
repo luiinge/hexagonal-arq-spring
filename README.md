@@ -12,6 +12,7 @@ spring/
 ├── commons/        # Infraestructura y utilidades compartidas
 ├── products/       # Microservicio de productos (puerto 8081)
 ├── items/          # Microservicio de items (puerto 8082)
+├── users/          # Microservicio de usuarios (puerto 8083)
 ├── eureka-server/  # Servidor de descubrimiento de servicios (puerto 8761)
 ├── gateway/        # API Gateway (puerto 8090)
 ├── config-server/  # Servidor centralizado de configuración (puerto 8888)
@@ -27,6 +28,63 @@ Librería compartida con autoconfiguration. Incluye:
 - `ErrorHandler` global (`@RestControllerAdvice`) con respuesta uniforme `ErrorDto`
 - Configuración de Feign (`FeignConfig`, `FeignErrorDecoder`)
 - Configuración de WebClient (`WebClientConfig`)
+- `AuditedEntity`: clase base JPA con campos `createdAt` / `updatedAt` gestionados automáticamente por Hibernate (`@CreationTimestamp`, `@UpdateTimestamp`)
+
+### `users`
+Microservicio de gestión de usuarios con CRUD completo sobre MySQL. Implementa registro con contraseña hasheada (BCrypt), roles por defecto y caché de roles estáticos.
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `POST /users` | Crea un nuevo usuario (devuelve 201) |
+| `GET /users` | Lista todos los usuarios |
+| `GET /users/{id}` | Obtiene un usuario por ID (404 si no existe) |
+| `PUT /users/{id}` | Actualiza email y estado activo de un usuario |
+| `DELETE /users/{id}` | Elimina un usuario (204 sin contenido) |
+
+La documentación OpenAPI está disponible en `/swagger-ui.html` una vez arrancado el servicio.
+
+#### Decisiones de diseño
+
+**Separación de comandos por operación**
+
+En lugar de reutilizar el mismo DTO para crear y actualizar, cada operación tiene su propio command object en el dominio:
+
+- `CreateUserCommand` — username, email, password en texto plano
+- `UpdateUserCommand` — id, email, active (sin password para evitar sobreescribirla accidentalmente)
+
+Los DTOs de la capa `app` (`CreateUserDto`, `UpdateUserDto`) se mapean a estos commands antes de llegar al servicio. Así el dominio no conoce el formato de entrada HTTP, y la capa de presentación no conoce la lógica interna.
+
+**Contraseñas con BCrypt**
+
+La contraseña nunca se almacena en texto plano. El `UserService` la hashea con `BCryptPasswordEncoder` antes de construir el objeto de dominio. BCrypt es un hash unidireccional: incluye un salt aleatorio embebido en el resultado, por lo que no requiere ninguna clave secreta adicional. Para verificar, BCrypt extrae el salt del hash almacenado y compara — sin necesidad de descifrar.
+
+El campo `password` está presente en el dominio y en la entidad, pero nunca se expone en los DTOs de respuesta (`UserDto`).
+
+**Roles con caché**
+
+Los roles son un catálogo estático. Al crear un usuario se asigna automáticamente `ROLE_USER`. Para evitar consultar la BD en cada creación, `RoleService.getDefaultRoles()` está anotado con `@Cacheable("defaultRoles")`.
+
+La caché vive en `RoleService` (un bean separado de `UserService`) para que el proxy de Spring AOP pueda interceptar la llamada — las llamadas `this.método()` dentro de la misma clase no pasan por el proxy y no activan la caché.
+
+El enum `RoleNames` evita magic strings al buscar los roles por nombre:
+
+```java
+roleRepository.findByName(RoleNames.ROLE_USER.name())
+```
+
+**Unicidad de username en actualizaciones**
+
+Para verificar que el username no está ya en uso por otro usuario, se usa una query específica en lugar de traer todos los usuarios a memoria:
+
+```java
+userRepository.existsByUsernameAndIdNot(username, id)
+```
+
+Esto traduce a un `EXISTS` en BD y aprovecha el índice único de `username`.
+
+**Relación con roles**
+
+`UserEntity` tiene una relación `@ManyToMany` con `RoleEntity` a través de la tabla intermedia `user_roles`. Se define con `FetchType.EAGER` por simplicidad, lo que carga siempre los roles junto con el usuario. Para entornos de alto rendimiento, lo recomendable es `LAZY` con `JOIN FETCH` solo cuando se necesiten los roles.
 
 ### `products`
 Microservicio que expone un CRUD de productos sobre MySQL.
@@ -697,6 +755,10 @@ Los errores del servicio remoto se propagan de forma estructurada:
 | Spring Cloud 2024.0.0 | OpenFeign, LoadBalancer, Eureka, Gateway, Config |
 | Spring WebFlux | WebClient (alternativa a Feign) |
 | Spring Data JPA | Persistencia |
+| Spring Cache | Caché en memoria para datos estáticos (roles) |
+| Spring Security Crypto | BCryptPasswordEncoder para hashing de contraseñas |
+| Springdoc OpenAPI 2.8.8 | Generación automática de Swagger UI (`/swagger-ui.html`) |
+| Jakarta Bean Validation | Validación de entidades (`@NotBlank`, `@Email`...) |
 | MySQL | Base de datos |
 | MapStruct | Mapeo entre capas |
 | Lombok | Reducción de boilerplate |
@@ -707,7 +769,7 @@ Los errores del servicio remoto se propagan de forma estructurada:
 
 - Java 21
 - MySQL corriendo en `localhost:3306`
-- Bases de datos `products` e `items` creadas
+- Bases de datos `products`, `items` y `users` creadas
 
 ## Arrancar el proyecto
 
@@ -727,7 +789,10 @@ Los errores del servicio remoto se propagan de forma estructurada:
 # 4. Arrancar items
 ./mvnw spring-boot:run -pl items
 
-# 5. Arrancar el gateway
+# 5. Arrancar users
+./mvnw spring-boot:run -pl users
+
+# 6. Arrancar el gateway
 ./mvnw spring-boot:run -pl gateway
 ```
 
@@ -737,4 +802,6 @@ Los errores del servicio remoto se propagan de forma estructurada:
 | Eureka (panel) | http://localhost:8761 |
 | Products (directo) | http://localhost:8081/products |
 | Items (directo) | http://localhost:8082/items |
+| Users (directo) | http://localhost:8083/users |
+| Users (Swagger) | http://localhost:8083/swagger-ui.html |
 | Gateway | http://localhost:8090/api/products, http://localhost:8090/api/items |

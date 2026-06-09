@@ -1,4 +1,4 @@
-package com.example.products.infra.persistence.entities;
+package com.example.commons.infra.persistence.entities;
 
 import java.time.Instant;
 

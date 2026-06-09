@@ -32,6 +32,13 @@ spring:
           filters:
             - StripPrefix=1  # Strip /api prefix before forwarding to the items service
 
+       # Users Service Route
+        - id: users-service
+          uri: lb://users-service  # Use load-balanced URI to route to the users service
+          predicates:
+            - Path=/api/users/**  # Route requests starting with /api/users to the users service
+          filters:
+            - StripPrefix=1  # Strip /api prefix before forwarding to the users service
 eureka:
   client:
       service-url:

@@ -1,0 +1,26 @@
+server:
+    port: 8083
+
+spring:
+  application:
+    name: users-service  # Nombre del servicio que se registrará en Eureka
+  config:
+    import: optional:configserver:http://localhost:8888 # Importamos la configuración desde el servidor de configuración, si el servidor de configuración no está disponible, el servicio de users seguirá funcionando con la configuración local, pero si el servidor de configuración está disponible, se cargará la configuración desde allí, y se sobreescribirá la configuración local.  
+  datasource:
+    url: jdbc:mysql://localhost:3306/users?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+  jpa:
+    show-sql: true
+
+
+logging:
+  pattern:
+    console: "%clr(%d{yyyy-MM-dd HH:mm:ss}){cyan} %highlight(%-5level) %msg%n"
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/  # URL of the Eureka server
+    register-with-eureka: true  # Register this service with Eureka
+    fetch-registry: true  # Fetch the registry from Eureka to discover other services
