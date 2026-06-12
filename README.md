@@ -168,6 +168,77 @@ Puerto: **9100**
 
 > `b2lkYy1jbGllbnQ6c2VjcmV0` es el Base64 de `oidc-client:secret`
 
+#### Flujos de peticiones
+
+**Login correcto**
+
+```mermaid
+sequenceDiagram
+    participant B as Navegador
+    participant C1 as Chain 1<br/>(OAuth2 endpoints)
+    participant C2 as Chain 2<br/>(Form login)
+    participant UDS as UserDetailsService
+
+    B->>C1: GET /oauth2/authorize?response_type=code&client_id=oidc-client&...
+    C1->>C1: AuthorizationFilter detecta anónimo → AccessDeniedException
+    C1->>C1: ExceptionTranslationFilter guarda petición en sesión
+    C1-->>B: 302 /login
+
+    B->>C2: GET /login
+    C2-->>B: 200 formulario con _csrf token
+
+    B->>C2: POST /login {username, password, _csrf}
+    C2->>UDS: loadUserByUsername("user")
+    UDS-->>C2: UserDetails {password: "{noop}user"}
+    C2->>C2: DaoAuthenticationProvider: passwords coinciden ✓
+    C2->>C2: SavedRequestAwareAuthenticationSuccessHandler
+    C2-->>B: 302 /oauth2/authorize?...&continue
+
+    B->>C1: GET /oauth2/authorize?...&continue
+    C1->>C1: OAuth2AuthorizationEndpointFilter: valida client, scope, redirect_uri
+    C1->>C1: genera authorization code
+    C1-->>B: 302 http://localhost:8080/authorized?code=ABC123
+
+    Note over B: Si no hay app en :8080, el código<br/>aparece en la barra de direcciones
+
+    B->>C1: POST /oauth2/token {grant_type=authorization_code, code=ABC123, ...}
+    Note over B,C1: normalmente lo hace la app cliente, no el navegador
+    C1->>C1: OAuth2TokenEndpointFilter: valida code y client secret
+    C1->>C1: genera JWT firmado con clave RSA privada
+    C1-->>B: 200 {access_token, id_token, refresh_token}
+```
+
+**Login con credenciales incorrectas**
+
+```mermaid
+sequenceDiagram
+    participant B as Navegador
+    participant C1 as Chain 1<br/>(OAuth2 endpoints)
+    participant C2 as Chain 2<br/>(Form login)
+    participant UDS as UserDetailsService
+
+    B->>C1: GET /oauth2/authorize?response_type=code&...
+    C1->>C1: AuthorizationFilter detecta anónimo → AccessDeniedException
+    C1->>C1: ExceptionTranslationFilter guarda petición en sesión
+    C1-->>B: 302 /login
+
+    B->>C2: GET /login
+    C2-->>B: 200 formulario con _csrf token
+
+    B->>C2: POST /login {username="user", password="INCORRECTA", _csrf}
+    C2->>UDS: loadUserByUsername("user")
+    UDS-->>C2: UserDetails {password: "{noop}user"}
+    C2->>C2: DaoAuthenticationProvider: passwords NO coinciden ✗
+    C2->>C2: BadCredentialsException
+    C2->>C2: SimpleUrlAuthenticationFailureHandler
+    C2-->>B: 302 /login?error
+
+    B->>C2: GET /login?error
+    C2-->>B: 200 formulario con mensaje de error
+
+    Note over B: La petición original sigue guardada<br/>en sesión — el usuario puede reintentar
+```
+
 #### Decisiones de diseño y aprendizajes
 
 **Dos SecurityFilterChain con `@Order`**
