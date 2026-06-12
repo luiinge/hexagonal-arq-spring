@@ -16,7 +16,8 @@ spring/
 ├── eureka-server/  # Servidor de descubrimiento de servicios (puerto 8761)
 ├── gateway/        # API Gateway (puerto 8090)
 ├── config-server/  # Servidor centralizado de configuración (puerto 8888)
-└── config-repo/    # Repositorio local con los archivos de configuración
+├── config-repo/    # Repositorio local con los archivos de configuración
+└── auth-server/    # Servidor de autorización OAuth2/OIDC (puerto 9100)
 ```
 
 ### `starter`
@@ -129,6 +130,88 @@ La anotación `@EnableConfigServer` en la clase principal activa el servidor:
 @EnableConfigServer
 public class ConfigServerApplication { ... }
 ```
+
+### `auth-server`
+
+Servidor de autorización OAuth2/OIDC implementado con **Spring Authorization Server**. Emite tokens JWT firmados con RSA que otros microservicios pueden verificar descargando la clave pública del endpoint `/oauth2/jwks`.
+
+Puerto: **9100**
+
+#### Endpoints disponibles
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `GET /oauth2/jwks` | Clave pública RSA en formato JWK Set (para que los resource servers verifiquen tokens) |
+| `GET /oauth2/authorize` | Inicio del flujo Authorization Code — redirige al login si no hay sesión |
+| `POST /oauth2/token` | Intercambio de authorization code por access_token, id_token y refresh_token |
+| `GET /userinfo` | Devuelve datos del usuario autenticado (requiere access_token con scope `openid`) |
+| `GET /.well-known/oauth-authorization-server` | Metadatos del servidor (issuer, endpoints, algoritmos) |
+
+#### Flujo de prueba (Authorization Code + OIDC)
+
+```
+1. Abre en el navegador:
+   http://localhost:9100/oauth2/authorize?response_type=code
+     &client_id=oidc-client&scope=openid
+     &redirect_uri=http://localhost:8080/authorized
+
+2. Introduce las credenciales (user/user o admin/admin)
+
+3. Copia el parámetro `code` de la URL de redirección
+
+4. Intercambia el code por tokens:
+   curl -X POST http://localhost:9100/oauth2/token \
+     -H "Authorization: Basic b2lkYy1jbGllbnQ6c2VjcmV0" \
+     -H "Content-Type: application/x-www-form-urlencoded" \
+     -d "grant_type=authorization_code&code=CODE&redirect_uri=http://localhost:8080/authorized"
+```
+
+> `b2lkYy1jbGllbnQ6c2VjcmV0` es el Base64 de `oidc-client:secret`
+
+#### Decisiones de diseño y aprendizajes
+
+**Dos SecurityFilterChain con `@Order`**
+
+El servidor de autorización necesita dos cadenas de seguridad distintas:
+
+- **Chain 1 (`@Order(1)`)** — protege los endpoints OAuth2/OIDC (`/oauth2/authorize`, `/oauth2/token`, etc.). Usa `securityMatcher` para aplicarse solo a esas rutas.
+- **Chain 2 (`@Order(2)`)** — protege el resto: activa el formulario de login en `/login` y exige autenticación al resto de rutas.
+
+Sin `@Order`, Spring no garantiza qué cadena se aplica primero y el comportamiento es impredecible.
+
+**`authorizeHttpRequests` en chain 1 es obligatorio**
+
+Sin `.authorizeHttpRequests(authorize -> authorize.anyRequest().authenticated())` en la primera cadena, un usuario anónimo accediendo a `/oauth2/authorize` no lanza `AccessDeniedException`. La petición llega al servlet sin respuesta, Tomcat la reenvía a `/error` y el usuario nunca ve el formulario de login.
+
+**`server.servlet.session.tracking-modes: cookie`**
+
+Por defecto, Tomcat añade `;jsessionid=...` a las URLs de redirección cuando aún no hay cookie de sesión. Spring Security's `StrictHttpFirewall` rechaza esas URLs porque contienen `;`. La solución es forzar que el tracking de sesión sea solo por cookie.
+
+**`applyDefaultSecurity` deprecated en 1.4**
+
+La llamada `OAuth2AuthorizationServerConfiguration.applyDefaultSecurity(http)` está deprecated desde Spring Authorization Server 1.4. La forma actual es usar `OAuth2AuthorizationServerConfigurer.authorizationServer()` directamente con `.with()`:
+
+```java
+OAuth2AuthorizationServerConfigurer configurer = OAuth2AuthorizationServerConfigurer.authorizationServer();
+http
+    .securityMatcher(configurer.getEndpointsMatcher())
+    .with(configurer, server -> server.oidc(Customizer.withDefaults()))
+    ...
+```
+
+**Clave RSA generada en memoria**
+
+La clave privada RSA que firma los JWT se genera al arrancar. Esto implica que cada reinicio del servidor invalida todos los tokens existentes. En producción la clave debe persistirse (KeyStore, Vault, etc.).
+
+**Páginas de error y seguridad**
+
+Las trazas de excepción Java no deben exponerse al exterior — revelan la estructura interna del sistema. Se configuran tres propiedades:
+```yaml
+server.error.include-stacktrace: never
+server.error.include-message: never
+server.error.whitelabel.enabled: false
+```
+Y se crean páginas HTML estáticas en `static/error/4xx.html` y `static/error/5xx.html`.
 
 ### `config-repo`
 Directorio que actúa como repositorio de configuración. Cada archivo `{nombre-servicio}.yaml` contiene la configuración externalizada de ese servicio. El Config Server sirve el archivo cuyo nombre coincida con el `spring.application.name` del cliente.
@@ -757,6 +840,7 @@ Los errores del servicio remoto se propagan de forma estructurada:
 | Spring Data JPA | Persistencia |
 | Spring Cache | Caché en memoria para datos estáticos (roles) |
 | Spring Security Crypto | BCryptPasswordEncoder para hashing de contraseñas |
+| Spring Authorization Server 1.5 | Servidor OAuth2/OIDC, emisión de JWT firmados con RSA |
 | Springdoc OpenAPI 2.8.8 | Generación automática de Swagger UI (`/swagger-ui.html`) |
 | Jakarta Bean Validation | Validación de entidades (`@NotBlank`, `@Email`...) |
 | MySQL | Base de datos |
@@ -800,6 +884,7 @@ Los errores del servicio remoto se propagan de forma estructurada:
 |----------|-----|
 | Config Server | http://localhost:8888/items-service/default |
 | Eureka (panel) | http://localhost:8761 |
+| Auth Server (JWK Set) | http://localhost:9100/oauth2/jwks |
 | Products (directo) | http://localhost:8081/products |
 | Items (directo) | http://localhost:8082/items |
 | Users (directo) | http://localhost:8083/users |

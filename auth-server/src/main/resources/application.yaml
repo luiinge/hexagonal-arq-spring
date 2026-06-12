@@ -1,0 +1,25 @@
+server:
+    port: 9100
+    servlet:
+        session:
+            tracking-modes: cookie  # evita que Tomcat añada ;jsessionid= a las URLs (lo rechaza StrictHttpFirewall)
+    error:
+        include-stacktrace: never   # nunca exponer trazas de excepción
+        include-message: never      # ni mensajes de error internos
+        whitelabel:
+            enabled: false          # desactiva la página blanca de Spring Boot
+
+spring:
+  application:
+    name: auth-server
+
+logging:
+  level:
+    org.springframework.security: INFO
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+    register-with-eureka: true
+    fetch-registry: true
