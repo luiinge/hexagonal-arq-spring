@@ -152,8 +152,8 @@ Puerto: **9100**
 ```
 1. Abre en el navegador:
    http://localhost:9100/oauth2/authorize?response_type=code
-     &client_id=oidc-client&scope=openid
-     &redirect_uri=http://localhost:8080/authorized
+     &client_id=gateway&scope=openid
+     &redirect_uri=http://localhost:8090/authorized
 
 2. Introduce las credenciales (user/user o admin/admin)
 
@@ -161,12 +161,12 @@ Puerto: **9100**
 
 4. Intercambia el code por tokens:
    curl -X POST http://localhost:9100/oauth2/token \
-     -H "Authorization: Basic b2lkYy1jbGllbnQ6c2VjcmV0" \
+     -H "Authorization: Basic Z2F0ZXdheTpzZWNyZXQ=" \
      -H "Content-Type: application/x-www-form-urlencoded" \
-     -d "grant_type=authorization_code&code=CODE&redirect_uri=http://localhost:8080/authorized"
+     -d "grant_type=authorization_code&code=CODE&redirect_uri=http://localhost:8090/authorized"
 ```
 
-> `b2lkYy1jbGllbnQ6c2VjcmV0` es el Base64 de `oidc-client:secret`
+> `Z2F0ZXdheTpzZWNyZXQ=` es el Base64 de `gateway:secret`
 
 #### Flujos de peticiones
 
@@ -274,24 +274,95 @@ http
 
 La clave privada RSA que firma los JWT se genera al arrancar. Esto implica que cada reinicio del servidor invalida todos los tokens existentes. En producción la clave debe persistirse (KeyStore, Vault, etc.).
 
+**Endpoint `/authorized` — implementación manual vs `oauth2-client`**
+
+El endpoint `/authorized` en el gateway recibe el authorization code del auth-server y lo intercambia por tokens llamando manualmente a `/oauth2/token`. Es una implementación didáctica para entender el flujo paso a paso, pero **no es la forma recomendada en producción**.
+
+La forma profesional es añadir `spring-boot-starter-oauth2-client` al gateway y dejar que Spring Security gestione todo automáticamente:
+
+| | Implementación manual (actual) | `oauth2-client` (producción) |
+|--|--|--|
+| Validación del parámetro `state` (anti-CSRF) | ❌ No | ✅ Automática |
+| Almacenamiento de tokens en sesión | ❌ No | ✅ Automático |
+| Renovación automática del token (refresh) | ❌ No | ✅ Automática |
+| Propagación del token a microservicios | ❌ Manual | ✅ Filtro `TokenRelay` |
+| Credenciales en el código | ❌ Hardcodeadas | ✅ En `application.yaml` |
+
+Con `oauth2-client`, el endpoint `/authorized` desaparece — Spring Security lo registra internamente en `/login/oauth2/code/{registrationId}` sin ningún controlador. La configuración sería:
+
+```yaml
+# gateway/application.yaml
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          gateway:
+            client-id: gateway
+            client-secret: secret
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            scope: openid, profile
+        provider:
+          gateway:
+            issuer-uri: http://localhost:9100  # descarga automáticamente los metadatos del auth-server
+```
+
+```java
+@Bean
+public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+    return http
+        .authorizeExchange(exchanges -> exchanges.anyExchange().authenticated())
+        .oauth2Login(Customizer.withDefaults())
+        .build();
+}
+```
+
+Y el filtro `TokenRelay` en cada ruta propaga automáticamente el token a los microservicios:
+```yaml
+filters:
+  - TokenRelay=
+```
+
+**Cliente OAuth2 vs Resource Server — dos roles distintos**
+
+En OAuth2 hay dos roles que no deben confundirse:
+
+- **Cliente OAuth2** — gestiona el flujo de login: redirige al usuario al auth-server, recibe el authorization code de vuelta e intercambia ese code por tokens. Es el punto de entrada. En este proyecto, **solo el gateway** actúa como cliente OAuth2.
+
+- **Resource Server** — valida el JWT en cada petición protegida. No participa en el flujo de login: simplemente extrae el token del header `Authorization: Bearer ...` y verifica su firma usando la clave pública del auth-server (descargada de `/oauth2/jwks`). Cada microservicio interno debería ser un resource server.
+
+```yaml
+# lo que iría en cada microservicio para proteger sus endpoints
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:9100
+```
+
+**¿Qué pasaría sin gateway?** Sin BFF, el flujo de login (cliente OAuth2) lo gestionaría el frontend (React, Angular...) directamente. El token quedaría expuesto a JavaScript en el navegador — menos seguro. Cada microservicio seguiría siendo resource server. Con el gateway como BFF, los tokens se almacenan en la sesión del servidor y el navegador nunca los ve.
+
 **Patrón BFF — gateway como único cliente OAuth2**
 
 Es habitual registrar el gateway como el único cliente OAuth2 registrado en el auth server, con las `redirectUri` apuntando a su puerto. Los microservicios internos no participan en el flujo de login — solo reciben tokens ya validados.
 
-Esto se combina con que cada microservicio actúe como **resource server**: valida el JWT en cada petición interna sin necesidad de comunicarse con el auth server en tiempo de petición (la verificación es local, usando la clave pública descargada de `/oauth2/jwks`).
+El filtro `TokenRelay=` en cada ruta del gateway propaga automáticamente el access token al microservicio destino en el header `Authorization`:
 
 ```
 Navegador → Gateway :8090 → auth-server :9100  (flujo OAuth2: login, code, token)
-Navegador → Gateway :8090 → microservicio       (peticiones normales con token ya obtenido)
+Navegador → Gateway :8090 → microservicio       (petición + Authorization: Bearer <token>)
 Microservicio valida el JWT localmente con la clave pública de /oauth2/jwks
 ```
 
-| | Gateway como cliente único (BFF) | Cada servicio como cliente |
+| | Gateway como cliente único (BFF) | Frontend como cliente directo |
 |--|--|--|
-| Los microservicios saben de OAuth2 | No | Sí |
-| Las `redirectUri` cambian al añadir servicios | No | Sí |
-| Complejidad de configuración | Centralizada en el gateway | Distribuida |
-| Habitual en producción | Sí | Menos común |
+| Los tokens llegan al navegador | No (más seguro) | Sí (expuestos a JS) |
+| Los microservicios saben de OAuth2 | No | No (siguen siendo resource servers) |
+| Las `redirectUri` cambian al añadir servicios | No | No |
+| Complejidad de configuración | Centralizada en el gateway | En el frontend |
+| Habitual en producción | Sí (apps tradicionales) | Sí (SPAs con PKCE) |
 
 **Páginas de error y seguridad**
 

@@ -148,20 +148,25 @@ public class AuthServerConfig {
     @Bean
     public RegisteredClientRepository registeredClientRepository() {
         RegisteredClient oidcClient = RegisteredClient.withId(UUID.randomUUID().toString())
-            .clientId("oidc-client")
+            .clientId("gateway")
             .clientSecret("{noop}secret")
             .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
             .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
             .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
-            .redirectUri("http://localhost:8090/login/oauth2/code/oidc-client-oidc")
+            .redirectUri("http://localhost:8090/login/oauth2/code/gateway")
+            // URI adicional para el flujo de login con Spring Security, que redirige a /authorized tras el login
+            // En producción habría que registrar la URI de cada entorno (dev, staging, prod) y cada app cliente.
             .redirectUri("http://localhost:8090/authorized")
+            // URI a la que redirige el navegador tras cerrar sesión (logout)
+            // En producción habría que registrar la URI de cada entorno (dev, staging, prod) y cada app cliente.
             .postLogoutRedirectUri("http://localhost:8090/logged-out")
             .scope(OidcScopes.OPENID)
             .scope(OidcScopes.PROFILE)
             // muestra pantalla de consentimiento tras el login para que el usuario
             // apruebe explícitamente los scopes que está concediendo a la app cliente
+            // En producción se suele desactivar para que el usuario no tenga que aprobar cada vez.
             .clientSettings(ClientSettings.builder()
-                .requireAuthorizationConsent(true)
+                .requireAuthorizationConsent(false)
                 .build())
             .build();
         return new InMemoryRegisteredClientRepository(oidcClient);

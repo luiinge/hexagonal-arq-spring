@@ -5,40 +5,62 @@ spring:
   application:
     name: gateway
 
+  security:
+    oauth2:
+      client:
+        registration:
+          # "gateway" debe coincidir con el clientId registrado en el auth-server
+          gateway:
+            client-id: gateway
+            client-secret: secret
+            authorization-grant-type: authorization_code
+            # Spring Security registra este endpoint internamente — no hace falta un controller manual
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            scope: openid, profile
+        provider:
+          gateway:
+            # Descarga automáticamente los endpoints del auth-server desde /.well-known/oauth-authorization-server
+            issuer-uri: http://localhost:9100
+
   # Gateway configuration
   cloud:
     gateway:
       server.webflux.routes:
+        - id: auth-service
+          uri: lb://auth-service  # Use load-balanced URI to route to the auth service
+          predicates:
+            - Path=/security/**  # Route requests starting with security to the auth service
+          filters:
+            - StripPrefix=1  # Strip /api prefix before forwarding to the auth service
       
         # Product Service Route
         - id: product-service
-          uri: lb://product-service  # Use load-balanced URI to route to the product service
+          uri: lb://product-service
           predicates:
-            - Path=/api/products/**  # Route requests starting with /api/products to the product service
+            - Path=/api/products/**
           filters:
-            - StripPrefix=1  # Strip /api prefix before forwarding to the product service
-             # Add circuit breaker filter
+            - StripPrefix=1
+            - TokenRelay=   # propaga el access_token de la sesión al microservicio
             - name: CircuitBreaker
               args:
                 name: productService
-                statusCodes: "500,502,503,504" # Consider these status codes as failures for the circuit breaker
-                
+                statusCodes: "500,502,503,504"
 
-        # Items Service Route
         - id: items-service
-          uri: lb://items-service  # Use load-balanced URI to route to the items service
+          uri: lb://items-service
           predicates:
-            - Path=/api/items/**  # Route requests starting with /api/items to the items service
+            - Path=/api/items/**
           filters:
-            - StripPrefix=1  # Strip /api prefix before forwarding to the items service
+            - StripPrefix=1
+            - TokenRelay=
 
-       # Users Service Route
         - id: users-service
-          uri: lb://users-service  # Use load-balanced URI to route to the users service
+          uri: lb://users-service
           predicates:
-            - Path=/api/users/**  # Route requests starting with /api/users to the users service
+            - Path=/api/users/**
           filters:
-            - StripPrefix=1  # Strip /api prefix before forwarding to the users service
+            - StripPrefix=1
+            - TokenRelay=
 eureka:
   client:
       service-url:
