@@ -1,6 +1,63 @@
-# Spring Microservices - Arquitectura Hexagonal
+# Spring Microservices — Referencia de Arquitectura
 
-Proyecto de aprendizaje que implementa una arquitectura de microservicios con **arquitectura hexagonal (Ports & Adapters)**. El objetivo es explorar distintas formas de resolver los mismos problemas: comunicación entre servicios, manejo de errores, balanceo de carga, etc.
+Implementación de referencia de una arquitectura de microservicios con Spring Boot 3.5 y Spring Cloud. Cubre los patrones más habituales en producción: **hexagonal architecture**, **API gateway como BFF**, **OAuth2/OIDC con JWT**, **service discovery**, **circuit breaker** y **configuración centralizada**.
+
+Cada decisión de diseño está documentada con el razonamiento detrás de ella y comparativas con las alternativas. El objetivo no es solo que funcione, sino explicar *por qué* está construido así.
+
+---
+
+## Arquitectura general
+
+```mermaid
+graph TD
+    Client["Cliente (navegador / curl / tests)"]
+
+    subgraph "Puerto 8090"
+        GW["Gateway<br/>(OAuth2 client + resource server)"]
+    end
+
+    subgraph "Puerto 9100"
+        AS["Auth Server<br/>(OAuth2/OIDC, JWT RSA)"]
+    end
+
+    subgraph "Puerto 8761"
+        EU["Eureka<br/>(service discovery)"]
+    end
+
+    subgraph "Puerto 8888"
+        CS["Config Server<br/>(configuración centralizada)"]
+    end
+
+    subgraph "Servicios internos"
+        PR["products :8081"]
+        IT["items :8082"]
+        US["users :8083"]
+    end
+
+    Client -->|"HTTP (público)"| GW
+    GW -->|"login / token"| AS
+    GW -->|"lb://product-service"| PR
+    GW -->|"lb://items-service"| IT
+    GW -->|"lb://users-service"| US
+    IT -->|"Feign / WebClient"| PR
+    PR & IT & US & GW -->|"registro + heartbeat"| EU
+    PR & IT & US -->|"carga config al arrancar"| CS
+```
+
+### Patrones implementados
+
+| Patrón | Dónde | Tecnología |
+|--------|-------|------------|
+| Hexagonal (Ports & Adapters) | `products`, `items`, `users` | Java interfaces (SPI) |
+| API Gateway / BFF | `gateway` | Spring Cloud Gateway (WebFlux) |
+| OAuth2 Authorization Code + OIDC | `gateway` → `auth-server` | Spring Security oauth2-client |
+| Bearer token (resource server) | `gateway`, microservicios | Spring Security oauth2-resource-server |
+| Service discovery | todos | Netflix Eureka |
+| Client-side load balancing | `gateway`, `items` | Spring Cloud LoadBalancer |
+| Circuit breaker | `items`, `gateway` | Resilience4j |
+| Configuración centralizada | `items` | Spring Cloud Config |
+| API versioning | `products` | Controllers por versión + gateway routing |
+| Propagación de tokens | `gateway` → servicios | Filtro `TokenRelay=` |
 
 ---
 
@@ -274,13 +331,11 @@ http
 
 La clave privada RSA que firma los JWT se genera al arrancar. Esto implica que cada reinicio del servidor invalida todos los tokens existentes. En producción la clave debe persistirse (KeyStore, Vault, etc.).
 
-**Endpoint `/authorized` — implementación manual vs `oauth2-client`**
+**`oauth2-client` en el gateway en lugar de un endpoint manual**
 
-El endpoint `/authorized` en el gateway recibe el authorization code del auth-server y lo intercambia por tokens llamando manualmente a `/oauth2/token`. Es una implementación didáctica para entender el flujo paso a paso, pero **no es la forma recomendada en producción**.
+La alternativa didáctica (implementar `/authorized` a mano para entender el flujo) tiene inconvenientes que la hacen inviable en producción:
 
-La forma profesional es añadir `spring-boot-starter-oauth2-client` al gateway y dejar que Spring Security gestione todo automáticamente:
-
-| | Implementación manual (actual) | `oauth2-client` (producción) |
+| | Endpoint `/authorized` manual | `oauth2-client` (implementación actual) |
 |--|--|--|
 | Validación del parámetro `state` (anti-CSRF) | ❌ No | ✅ Automática |
 | Almacenamiento de tokens en sesión | ❌ No | ✅ Automático |
@@ -288,41 +343,7 @@ La forma profesional es añadir `spring-boot-starter-oauth2-client` al gateway y
 | Propagación del token a microservicios | ❌ Manual | ✅ Filtro `TokenRelay` |
 | Credenciales en el código | ❌ Hardcodeadas | ✅ En `application.yaml` |
 
-Con `oauth2-client`, el endpoint `/authorized` desaparece — Spring Security lo registra internamente en `/login/oauth2/code/{registrationId}` sin ningún controlador. La configuración sería:
-
-```yaml
-# gateway/application.yaml
-spring:
-  security:
-    oauth2:
-      client:
-        registration:
-          gateway:
-            client-id: gateway
-            client-secret: secret
-            authorization-grant-type: authorization_code
-            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
-            scope: openid, profile
-        provider:
-          gateway:
-            issuer-uri: http://localhost:9100  # descarga automáticamente los metadatos del auth-server
-```
-
-```java
-@Bean
-public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
-    return http
-        .authorizeExchange(exchanges -> exchanges.anyExchange().authenticated())
-        .oauth2Login(Customizer.withDefaults())
-        .build();
-}
-```
-
-Y el filtro `TokenRelay` en cada ruta propaga automáticamente el token a los microservicios:
-```yaml
-filters:
-  - TokenRelay=
-```
+Con `spring-boot-starter-oauth2-client`, el endpoint `/authorized` desaparece — Spring Security registra internamente `/login/oauth2/code/{registrationId}` sin ningún controller. La configuración del gateway es la que se describe en la sección anterior.
 
 **Cliente OAuth2 vs Resource Server — dos roles distintos**
 
@@ -383,35 +404,54 @@ config-repo/
 ```
 
 ### `gateway`
-Punto de entrada único para todos los clientes externos. Implementado con **Spring Cloud Gateway** (basado en WebFlux). Expone los servicios bajo una ruta unificada en el puerto 8090, ocultando los puertos internos.
+Punto de entrada único para todos los clientes externos. Implementado con **Spring Cloud Gateway** (basado en WebFlux) en el puerto 8090. Cumple tres roles a la vez:
 
-| Ruta pública (gateway:8090) | Se redirige a | Puerto interno |
-|-----------------------------|---------------|----------------|
-| `GET /api/products/**`      | `product-service` | 8081 |
-| `GET /api/items/**`         | `items-service`   | 8082 |
+1. **OAuth2 client (BFF)** — gestiona el flujo de login: redirige al auth-server, recibe el authorization code, intercambia el code por tokens y mantiene la sesión. El navegador nunca ve los tokens.
+2. **OAuth2 resource server** — acepta Bearer tokens en el header `Authorization` para clientes automatizados (tests, CI, scripts).
+3. **Proxy inteligente** — enruta peticiones a los microservicios con load balancing (Eureka), strip de prefijos y circuit breaker.
 
-El gateway se registra en Eureka como cliente y usa `lb://` para resolver los nombres lógicos de los servicios a través del Spring Cloud LoadBalancer, beneficiándose del mismo descubrimiento dinámico que el resto de microservicios.
+| Ruta pública (gateway:8090) | Se redirige a | Filtros activos |
+|-----------------------------|---------------|-----------------|
+| `GET /api/products/**`      | `product-service :8081` | StripPrefix, TokenRelay, CircuitBreaker |
+| `GET /api/items/**`         | `items-service :8082`   | StripPrefix, TokenRelay |
+| `GET /api/users/**`         | `users-service :8083`   | StripPrefix, TokenRelay |
 
-El filtro `StripPrefix=1` elimina el segmento `/api` antes de reenviar la petición, de modo que `/api/products/1` llega al servicio `products` como `/products/1`.
+El filtro `TokenRelay=` propaga automáticamente el access token de la sesión al microservicio destino en el header `Authorization: Bearer ...`. El filtro `StripPrefix=1` elimina el segmento `/api` antes de reenviar, de modo que `/api/products/1` llega al servicio como `/products/1`.
 
 ```yaml
 spring:
-  cloud:
-    gateway:
-      server.webflux.routes:
-        - id: product-service
-          uri: lb://product-service
-          predicates:
-            - Path=/api/products/**
-          filters:
-            - StripPrefix=1
-        - id: items-service
-          uri: lb://items-service
-          predicates:
-            - Path=/api/items/**
-          filters:
-            - StripPrefix=1
+  security:
+    oauth2:
+      client:
+        registration:
+          gateway:
+            client-id: gateway
+            client-secret: secret
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            scope: openid, profile
+        provider:
+          gateway:
+            issuer-uri: http://localhost:9100  # descarga metadatos OIDC automáticamente
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:9100    # valida Bearer tokens
 ```
+
+```java
+@Bean
+public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+    return http
+        .authorizeExchange(exchanges -> exchanges
+            .pathMatchers("/logged-out").permitAll()
+            .anyExchange().authenticated())
+        .oauth2Login(Customizer.withDefaults())           // flujo navegador
+        .oauth2ResourceServer(oauth2 -> oauth2.jwt(...)) // flujo API / CI
+        .build();
+}
+```
+
+Spring Security evalúa primero si hay un Bearer token en el header; si no, usa la sesión de login. Ambos modos coexisten sin conflicto.
 
 ---
 
@@ -995,8 +1035,8 @@ Los errores del servicio remoto se propagan de forma estructurada:
 | Tecnología | Uso |
 |-----------|-----|
 | Java 21 | Lenguaje |
-| Spring Boot 3.4.2 | Framework base |
-| Spring Cloud 2024.0.0 | OpenFeign, LoadBalancer, Eureka, Gateway, Config |
+| Spring Boot 3.5 | Framework base |
+| Spring Cloud 2025.0 | OpenFeign, LoadBalancer, Eureka, Gateway, Config |
 | Spring WebFlux | WebClient (alternativa a Feign) |
 | Spring Data JPA | Persistencia |
 | Spring Cache | Caché en memoria para datos estáticos (roles) |
@@ -1028,16 +1068,19 @@ Los errores del servicio remoto se propagan de forma estructurada:
 # 2. Arrancar Eureka
 ./mvnw spring-boot:run -pl eureka-server
 
-# 3. Arrancar products
+# 3. Arrancar el Auth Server (debe estar levantado antes que el gateway)
+./mvnw spring-boot:run -pl auth-server
+
+# 4. Arrancar products
 ./mvnw spring-boot:run -pl products
 
-# 4. Arrancar items
+# 5. Arrancar items
 ./mvnw spring-boot:run -pl items
 
-# 5. Arrancar users
+# 6. Arrancar users
 ./mvnw spring-boot:run -pl users
 
-# 6. Arrancar el gateway
+# 7. Arrancar el gateway (requiere auth-server en :9100 para resolver issuer-uri al arrancar)
 ./mvnw spring-boot:run -pl gateway
 ```
 
