@@ -453,6 +453,17 @@ public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
 
 Spring Security evalúa primero si hay un Bearer token en el header; si no, usa la sesión de login. Ambos modos coexisten sin conflicto.
 
+**¿Dónde iría esta configuración sin gateway?**
+
+El gateway concentra dos roles OAuth2 distintos. Sin él, cada configuración va a un sitio diferente:
+
+| Configuración | Con gateway (este proyecto) | Sin gateway |
+|---|---|---|
+| `oauth2.client` | Solo en el gateway (BFF) | En el frontend con PKCE (SPA) o en cada servicio expuesto al navegador |
+| `oauth2.resourceserver` | En el gateway + idealmente en cada microservicio | En cada microservicio |
+
+Los microservicios de este proyecto no tienen `resourceserver` configurado — confían en que el gateway ya validó el token. Eso simplifica el código, pero en producción cada microservicio debería validar el JWT de forma independiente (defensa en profundidad): si alguien accede directamente al puerto interno saltándose el gateway, no habría ninguna validación.
+
 ---
 
 ## Arquitectura hexagonal
