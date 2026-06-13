@@ -15,6 +15,7 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.oauth2.core.oidc.OidcScopes;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.server.authorization.client.InMemoryRegisteredClientRepository;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
@@ -22,6 +23,7 @@ import org.springframework.security.oauth2.server.authorization.client.Registere
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
+import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
 import java.security.KeyPair;
 import com.nimbusds.jose.jwk.RSAKey;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
@@ -125,8 +127,21 @@ public class AuthServerConfig {
     //   - authorizationGrantType: flujos OAuth2 permitidos
     //       AUTHORIZATION_CODE = el flujo estándar con redirección al navegador
     //       REFRESH_TOKEN      = permite renovar tokens sin que el usuario vuelva a logarse
-    //   - redirectUri: URL a la que se redirige tras autorizar (debe coincidir exactamente)
-    //   - scope "openid": indica que el cliente puede pedir tokens OIDC (con datos del usuario)
+    //   - redirectUri: whitelist de URLs permitidas tras autorizar. El auth server NO llama
+    //       a esta URL — es el NAVEGADOR quien la sigue (302). Su función es de seguridad:
+    //       evita que un atacante sustituya la URI por la suya y robe el authorization code.
+    //       Si el cliente corre en un puerto distinto hay que registrar una URI adicional.
+    //       En producción cada app/entorno tiene su propio cliente con sus propias URIs.
+    //   - scope "openid"/"profile": los scopes que este cliente tiene permitido solicitar.
+    //       Solo habilitan la posibilidad — el cliente los pide explícitamente en cada petición.
+    //
+    // PATRÓN BFF (Backend for Frontend):
+    //   Es habitual registrar el GATEWAY como único cliente OAuth2, con las redirectUri
+    //   apuntando a su puerto. El gateway gestiona todo el flujo de login y los microservicios
+    //   internos solo reciben tokens ya validados — nunca participan en el flujo OAuth2.
+    //   Esto combina con que cada microservicio sea un resource server que valida el JWT:
+    //     - Gateway    → cliente OAuth2 (gestiona login, intercambia codes por tokens)
+    //     - Servicios  → resource servers (validan el token en cada petición interna)
     //
     // En producción esto se guardaría en base de datos.
     // ------------------------------------------------------------------------------------
@@ -138,9 +153,16 @@ public class AuthServerConfig {
             .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
             .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
             .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
-            .redirectUri("http://localhost:8080/login/oauth2/code/oidc-client-oidc")
-            .redirectUri("http://localhost:8080/authorized")
-            .scope("openid")
+            .redirectUri("http://localhost:8090/login/oauth2/code/oidc-client-oidc")
+            .redirectUri("http://localhost:8090/authorized")
+            .postLogoutRedirectUri("http://localhost:8090/logged-out")
+            .scope(OidcScopes.OPENID)
+            .scope(OidcScopes.PROFILE)
+            // muestra pantalla de consentimiento tras el login para que el usuario
+            // apruebe explícitamente los scopes que está concediendo a la app cliente
+            .clientSettings(ClientSettings.builder()
+                .requireAuthorizationConsent(true)
+                .build())
             .build();
         return new InMemoryRegisteredClientRepository(oidcClient);
     }

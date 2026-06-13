@@ -274,6 +274,25 @@ http
 
 La clave privada RSA que firma los JWT se genera al arrancar. Esto implica que cada reinicio del servidor invalida todos los tokens existentes. En producción la clave debe persistirse (KeyStore, Vault, etc.).
 
+**Patrón BFF — gateway como único cliente OAuth2**
+
+Es habitual registrar el gateway como el único cliente OAuth2 registrado en el auth server, con las `redirectUri` apuntando a su puerto. Los microservicios internos no participan en el flujo de login — solo reciben tokens ya validados.
+
+Esto se combina con que cada microservicio actúe como **resource server**: valida el JWT en cada petición interna sin necesidad de comunicarse con el auth server en tiempo de petición (la verificación es local, usando la clave pública descargada de `/oauth2/jwks`).
+
+```
+Navegador → Gateway :8090 → auth-server :9100  (flujo OAuth2: login, code, token)
+Navegador → Gateway :8090 → microservicio       (peticiones normales con token ya obtenido)
+Microservicio valida el JWT localmente con la clave pública de /oauth2/jwks
+```
+
+| | Gateway como cliente único (BFF) | Cada servicio como cliente |
+|--|--|--|
+| Los microservicios saben de OAuth2 | No | Sí |
+| Las `redirectUri` cambian al añadir servicios | No | Sí |
+| Complejidad de configuración | Centralizada en el gateway | Distribuida |
+| Habitual en producción | Sí | Menos común |
+
 **Páginas de error y seguridad**
 
 Las trazas de excepción Java no deben exponerse al exterior — revelan la estructura interna del sistema. Se configuran tres propiedades:
