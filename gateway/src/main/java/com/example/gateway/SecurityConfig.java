@@ -22,7 +22,7 @@ public class SecurityConfig {
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
         return http
             .authorizeExchange(exchanges -> exchanges
-                .pathMatchers("/logged-out").permitAll()
+                .pathMatchers("/logged-out", "/public/**").permitAll()
                 .anyExchange().authenticated())
             .oauth2Login(Customizer.withDefaults())
             .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))

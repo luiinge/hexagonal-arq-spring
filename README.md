@@ -464,6 +464,30 @@ El gateway concentra dos roles OAuth2 distintos. Sin él, cada configuración va
 
 Los microservicios de este proyecto no tienen `resourceserver` configurado — confían en que el gateway ya validó el token. Eso simplifica el código, pero en producción cada microservicio debería validar el JWT de forma independiente (defensa en profundidad): si alguien accede directamente al puerto interno saltándose el gateway, no habría ninguna validación.
 
+**Endpoints públicos (sin autenticación)**
+
+Para exponer un endpoint sin requerir token ni sesión, hay que actuar en dos sitios:
+
+1. `SecurityConfig` — añadir el path a `permitAll()`:
+
+```java
+.pathMatchers("/logged-out", "/public/**").permitAll()
+```
+
+2. Si la ruta reenvía a un microservicio, no incluir `TokenRelay=` en los filtros de esa ruta (no hay token que propagar).
+
+El gateway incluye un endpoint de ejemplo en `/public/info` (implementado en `PublicController`) que responde sin autenticación:
+
+```bash
+# sin token → 200
+curl http://localhost:8090/public/info
+
+# ruta protegida sin token → 302 al login (navegador) o 401 (cliente API)
+curl http://localhost:8090/api/products
+```
+
+El 302 en lugar de 401 para rutas protegidas ocurre porque `oauth2Login` está activo: los navegadores reciben redirect al formulario de login. Los clientes que envíen `Accept: application/json` reciben 401, porque Spring Security les encamina por el path del `oauth2ResourceServer`.
+
 ---
 
 ## Arquitectura hexagonal
