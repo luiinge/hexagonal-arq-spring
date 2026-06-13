@@ -13,6 +13,10 @@ configuration:
   core.resourcePath: features
   rest:
     baseURL: http://localhost:8090
+  auth:
+    tokenUrl: http://localhost:9100/oauth2/token
+    clientId: gateway
+    clientSecret: secret
 
 profiles:
   gateway:

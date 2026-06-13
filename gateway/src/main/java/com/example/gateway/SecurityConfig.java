@@ -6,15 +6,15 @@ import org.springframework.security.config.Customizer;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.web.server.SecurityWebFilterChain;
 
-// Configuración de seguridad del gateway como cliente OAuth2.
+// Configuración de seguridad del gateway como cliente OAuth2 y resource server.
 //
-// Con spring-boot-starter-oauth2-client y oauth2Login() activado, Spring Security:
-//   1. Intercepta cualquier petición no autenticada y redirige al auth-server
-//   2. Registra automáticamente el endpoint /login/oauth2/code/{registrationId}
-//      que recibe el authorization code de vuelta (equivale al /authorized manual)
-//   3. Intercambia el code por tokens y guarda la sesión del usuario
+// Soporta dos modos de autenticación en paralelo:
+//   - oauth2Login(): flujo de navegador — redirige al auth-server, gestiona sesión
+//   - oauth2ResourceServer(): flujo API — acepta Bearer token en el header Authorization
 //
-// El filtro TokenRelay= en las rutas propaga el access_token a los microservicios.
+// El segundo modo permite que clientes automatizados (tests, CI, herramientas CLI)
+// obtengan un token via client_credentials y lo pasen directamente sin sesión.
+// Spring Security evalúa primero si hay Bearer token; si no, usa la sesión de login.
 @Configuration
 public class SecurityConfig {
 
@@ -25,6 +25,7 @@ public class SecurityConfig {
                 .pathMatchers("/logged-out").permitAll()
                 .anyExchange().authenticated())
             .oauth2Login(Customizer.withDefaults())
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
             .build();
     }
 }

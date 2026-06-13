@@ -151,8 +151,10 @@ public class AuthServerConfig {
             .clientId("gateway")
             .clientSecret("{noop}secret")
             .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+            .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)
             .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
             .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
+            .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
             .redirectUri("http://localhost:8090/login/oauth2/code/gateway")
             // URI adicional para el flujo de login con Spring Security, que redirige a /authorized tras el login
             // En producción habría que registrar la URI de cada entorno (dev, staging, prod) y cada app cliente.

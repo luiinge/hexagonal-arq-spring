@@ -21,6 +21,10 @@ spring:
           gateway:
             # Descarga automáticamente los endpoints del auth-server desde /.well-known/oauth-authorization-server
             issuer-uri: http://localhost:9100
+      resourceserver:
+        jwt:
+          # Misma clave pública que el cliente — valida Bearer tokens en peticiones de API/CI
+          issuer-uri: http://localhost:9100
 
   # Gateway configuration
   cloud:

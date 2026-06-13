@@ -1,6 +1,10 @@
 @smoke
 Feature: Smoke tests - microservicios via gateway (puerto 8090)
 
+  Background:
+    Given I obtain an OAuth2 client credentials token from "http://localhost:9100/oauth2/token" with client "gateway" and secret "secret" into variable accessToken
+    And the authorization is Bearer "${accessToken}"
+
   # ── Products ──────────────────────────────────────────────────────────────
 
   @smoke
