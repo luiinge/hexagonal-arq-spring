@@ -544,6 +544,36 @@ curl http://localhost:8090/api/products
 
 El 302 en lugar de 401 para rutas protegidas ocurre porque `oauth2Login` está activo: los navegadores reciben redirect al formulario de login. Los clientes que envíen `Accept: application/json` reciben 401, porque Spring Security les encamina por el path del `oauth2ResourceServer`.
 
+**Flujo de login desde un frontend (SPA)**
+
+Con el patrón BFF el frontend nunca interactúa con OAuth2 directamente. Spring Security registra automáticamente el endpoint `/oauth2/authorization/{registrationId}` para iniciar el flujo. El frontend solo necesita redirigir el navegador a ese endpoint:
+
+```js
+// botón de login — redirección del navegador, no AJAX
+window.location.href = 'http://localhost:8090/oauth2/authorization/gateway';
+```
+
+El flujo completo desde ese momento:
+
+```
+1. Navegador → GET /oauth2/authorization/gateway
+2. Gateway genera state + PKCE, redirige al auth-server
+3. Usuario introduce credenciales en el formulario del auth-server
+4. Auth-server redirige → GET /login/oauth2/code/gateway?code=ABC&state=...
+5. Gateway intercambia el code por tokens y guarda la sesión
+6. Gateway redirige al frontend (a / o a la URL original)
+7. A partir de aquí el frontend llama a /api/* normalmente
+   y el gateway añade el token de sesión en cada petición automáticamente
+```
+
+Para saber si hay sesión activa, el frontend llama a un endpoint del gateway (p.ej. `/api/me`). Si devuelve 401, no hay sesión — mostrar botón de login. Si devuelve datos, el usuario está autenticado.
+
+Para el logout, otra redirección del navegador — Spring Security invalida la sesión automáticamente:
+
+```js
+window.location.href = 'http://localhost:8090/logout';
+```
+
 ---
 
 ## Arquitectura hexagonal
