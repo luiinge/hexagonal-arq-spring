@@ -363,6 +363,62 @@ spring:
           issuer-uri: http://localhost:9100
 ```
 
+**ID token vs access token — para qué sirve cada uno**
+
+El flujo OIDC devuelve dos tokens distintos con propósitos distintos:
+
+| | ID token | Access token |
+|---|---|---|
+| Responde a | ¿Quién eres? (autenticación) | ¿Qué puedes hacer? (autorización) |
+| Audiencia | El cliente OAuth2 (el gateway) | Los resource servers (microservicios) |
+| Lo usa | Spring Security para crear la sesión | `TokenRelay=` para propagarlo a microservicios |
+| Contiene | Datos de perfil: `sub`, `name`, `email`... | `sub`, scopes, roles (si se configuran) |
+| Viaja a los microservicios | No | Sí |
+
+El ID token lo consume Spring Security internamente en el gateway al hacer login y no sale de ahí. Los microservicios solo reciben el access token.
+
+**Trazabilidad — guardar quién hizo cada cambio**
+
+El access token ya contiene `sub` (el identificador del usuario). Los microservicios pueden extraerlo para campos de auditoría (`createdBy`, `updatedBy`):
+
+```java
+@PostMapping
+public ResponseEntity<?> create(@AuthenticationPrincipal Jwt jwt, @RequestBody CreateDto dto) {
+    String username = jwt.getSubject();
+    service.create(dto, username);
+}
+```
+
+Para incluir roles u otros datos en el access token, se añade un `OAuth2TokenCustomizer` en el auth-server:
+
+```java
+@Bean
+public OAuth2TokenCustomizer<JwtEncodingContext> tokenCustomizer() {
+    return context -> {
+        if (context.getTokenType().equals(OAuth2TokenType.ACCESS_TOKEN)) {
+            Set<String> roles = context.getPrincipal().getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .collect(Collectors.toSet());
+            context.getClaims().claim("roles", roles);
+        }
+    };
+}
+```
+
+**Mostrar datos de perfil en el frontend**
+
+Aunque técnicamente se podrían leer del access token, no es lo recomendable: su audiencia son los microservicios, no el cliente. En el patrón BFF el frontend nunca toca tokens directamente — le pide los datos al gateway a través de un endpoint propio:
+
+```
+Frontend → GET /api/me
+               ↓
+           Gateway lee el ID token de la sesión (Spring Security lo tiene disponible)
+               ↓
+           Devuelve { sub, name, email, ... } al frontend
+```
+
+Si se necesitan datos que no están en el ID token, el auth-server expone `/userinfo` — el gateway puede llamarlo con el access token y enriquecer la respuesta.
+
 **¿Qué pasaría sin gateway?** Sin BFF, el flujo de login (cliente OAuth2) lo gestionaría el frontend (React, Angular...) directamente. El token quedaría expuesto a JavaScript en el navegador — menos seguro. Cada microservicio seguiría siendo resource server. Con el gateway como BFF, los tokens se almacenan en la sesión del servidor y el navegador nunca los ve.
 
 **Patrón BFF — gateway como único cliente OAuth2**
