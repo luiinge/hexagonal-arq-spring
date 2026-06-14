@@ -446,6 +446,48 @@ Aunque ambos aparecen en el token, responden a preguntas diferentes:
 
 En la mayoría de apps de negocio los scopes son casi transparentes (siempre se piden los mismos) y la lógica real de autorización la hacen los roles.
 
+**Procesos que duran más que un token**
+
+La caducidad del token nunca debe gestionarse en la capa de negocio — es un problema de infraestructura. La solución depende de quién lanza el proceso:
+
+**Caso 1 — proceso lanzado por un usuario (navegador)**
+
+`spring-boot-starter-oauth2-client` en el gateway renueva el `access_token` automáticamente usando el `refresh_token` antes de cada petición a un microservicio. La lógica de negocio no sabe que el token caducó. El único requisito es que el cliente tenga el grant type `REFRESH_TOKEN` registrado en el auth-server (ya configurado en este proyecto).
+
+Si el proceso dura más que el `refresh_token` (días/semanas), el usuario debe volver a hacer login — y normalmente eso es lo correcto. Un proceso tan largo debería rediseñarse como un job de background.
+
+**Caso 2 — proceso lanzado por una máquina (scheduler, job)**
+
+Se usa `client_credentials`. Con `OAuth2AuthorizedClientManager` de Spring Security el token se renueva automáticamente antes de cada llamada HTTP, sin intervención manual:
+
+```java
+@Scheduled(fixedDelay = 3600000)
+public void processLongJob() {
+    // el RestClient/WebClient configurado con OAuth2 renueva el token
+    // automáticamente cuando caduca — la lógica de negocio no sabe nada
+}
+```
+
+**Caso 3 — job largo con contexto de usuario (horas)**
+
+Si el proceso necesita actuar en nombre de un usuario durante horas, el patrón es separar autorización de ejecución:
+
+```
+Usuario autoriza → se persiste el refresh_token en BD
+                       ↓
+Job recupera el refresh_token → obtiene un access_token nuevo cuando lo necesita
+                       ↓
+Job termina → se descarta el refresh_token
+```
+
+La lógica de negocio recibe siempre un token válido — el mecanismo de renovación es transparente.
+
+| Quién lanza el proceso | Solución |
+|---|---|
+| Usuario (navegador) | `oauth2-client` en el gateway renueva con `refresh_token` automáticamente |
+| Máquina / scheduler | `client_credentials` con `OAuth2AuthorizedClientManager` |
+| Job largo con contexto de usuario | Persistir `refresh_token` en BD y renovar cuando el job lo necesite |
+
 **¿Qué pasaría sin gateway?** Sin BFF, el flujo de login (cliente OAuth2) lo gestionaría el frontend (React, Angular...) directamente. El token quedaría expuesto a JavaScript en el navegador — menos seguro. Cada microservicio seguiría siendo resource server. Con el gateway como BFF, los tokens se almacenan en la sesión del servidor y el navegador nunca los ve.
 
 **Patrón BFF — gateway como único cliente OAuth2**
