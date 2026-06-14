@@ -446,6 +446,33 @@ Aunque ambos aparecen en el token, responden a preguntas diferentes:
 
 En la mayoría de apps de negocio los scopes son casi transparentes (siempre se piden los mismos) y la lógica real de autorización la hacen los roles.
 
+**Scopes `read` y `write`**
+
+Es habitual ver estos scopes en cursos y ejemplos. Permiten controlar qué puede hacer la **aplicación cliente** con los recursos, independientemente de los roles del usuario:
+
+- `scope=read` → la app solo puede hacer operaciones de lectura (GET)
+- `scope=write` → la app puede modificar recursos (POST, PUT, DELETE)
+
+Tienen sentido en APIs públicas con múltiples clientes de distinto nivel de acceso (una app de consulta vs una app de gestión). En un proyecto con un único cliente OAuth2 (el gateway) y control de acceso basado en roles, **no aportan gran cosa** — los roles ya cubren esa responsabilidad.
+
+Si se quisieran usar, la protección va en cada microservicio con `@PreAuthorize`. Spring Security añade el prefijo `SCOPE_` automáticamente a los scopes del JWT:
+
+```java
+@PreAuthorize("hasAuthority('SCOPE_read')")
+@GetMapping
+public List<Product> findAll() { ... }
+
+@PreAuthorize("hasAuthority('SCOPE_write')")
+@PostMapping
+public ResponseEntity<?> create(...) { ... }
+```
+
+Y el cliente los solicitaría en la configuración del gateway:
+
+```yaml
+scope: openid, profile, read, write
+```
+
 **Procesos que duran más que un token**
 
 La caducidad del token nunca debe gestionarse en la capa de negocio — es un problema de infraestructura. La solución depende de quién lanza el proceso:
