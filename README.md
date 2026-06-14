@@ -590,6 +590,48 @@ spring:
           issuer-uri: http://localhost:9100    # valida Bearer tokens
 ```
 
+**Secretos en configuración — nunca en texto plano en producción**
+
+El `client-secret` del ejemplo anterior nunca debería estar en texto plano en un archivo que va a control de versiones. Opciones de menor a mayor madurez:
+
+*Variables de entorno* — lo mínimo aceptable. El secreto sale del código y cada entorno lo inyecta:
+
+```yaml
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          gateway:
+            client-secret: ${GATEWAY_CLIENT_SECRET}
+```
+
+```bash
+export GATEWAY_CLIENT_SECRET=secret
+mvn spring-boot:run
+```
+
+En Kubernetes sería un `Secret` montado como variable de entorno; en Docker Compose, un `.env` que no se commitea.
+
+*Spring Cloud Config + cifrado* — el Config Server puede almacenar valores cifrados con el prefijo `{cipher}` y descifrarlos antes de servirlos al microservicio. La clave de cifrado vive en el servidor, no en el repo.
+
+```yaml
+# config-repo/gateway.yaml
+spring.security.oauth2.client.registration.gateway.client-secret: '{cipher}AQB3k...'
+```
+
+*HashiCorp Vault* — el estándar en producción. Los secretos no tocan ningún archivo: el servicio los pide a Vault al arrancar con su propia identidad. Spring Cloud Vault tiene integración directa:
+
+```yaml
+spring:
+  cloud:
+    vault:
+      host: vault.empresa.com
+      authentication: KUBERNETES
+```
+
+El `{noop}` en las contraseñas de usuario del auth-server tiene el mismo problema — en producción deberían venir de una base de datos con BCrypt, no estar hardcodeadas en código.
+
 ```java
 @Bean
 public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
