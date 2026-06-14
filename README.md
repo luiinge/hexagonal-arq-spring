@@ -419,6 +419,33 @@ Frontend → GET /api/me
 
 Si se necesitan datos que no están en el ID token, el auth-server expone `/userinfo` — el gateway puede llamarlo con el access token y enriquecer la respuesta.
 
+**Scopes vs roles — dos mecanismos distintos**
+
+Aunque ambos aparecen en el token, responden a preguntas diferentes:
+
+- **Scopes** — definen qué información o recursos puede acceder la **aplicación cliente**. Los pide el cliente OAuth2 en el flujo de login y el usuario los aprueba. Son vocabulario estándar de OAuth2/OIDC (`openid`, `profile`, `email`). No dicen nada sobre lo que el usuario puede hacer — dicen lo que *la app* tiene permiso de leer sobre él.
+
+- **Roles** — definen qué puede hacer el **usuario** dentro del sistema (`ROLE_USER`, `ROLE_ADMIN`). Los asigna el backend, no el cliente. No son parte del estándar OAuth2 — hay que añadirlos al token como claim custom con `OAuth2TokenCustomizer`.
+
+```json
+// access_token decodificado
+{
+  "sub": "luis",
+  "scope": "openid profile",   // qué puede leer la app sobre el usuario
+  "roles": ["ROLE_USER"]       // qué puede hacer el usuario (claim custom)
+}
+```
+
+| | Scopes | Roles |
+|---|---|---|
+| Responde a | ¿Qué datos puede leer la app? | ¿Qué puede hacer el usuario? |
+| Lo define | El cliente OAuth2 (lo pide) | El backend (lo asigna al usuario) |
+| Lo aprueba | El usuario (consentimiento) | El administrador del sistema |
+| Estándar OAuth2/OIDC | Sí | No (claim custom) |
+| Ejemplo | `openid`, `profile`, `email` | `ROLE_ADMIN`, `ROLE_USER` |
+
+En la mayoría de apps de negocio los scopes son casi transparentes (siempre se piden los mismos) y la lógica real de autorización la hacen los roles.
+
 **¿Qué pasaría sin gateway?** Sin BFF, el flujo de login (cliente OAuth2) lo gestionaría el frontend (React, Angular...) directamente. El token quedaría expuesto a JavaScript en el navegador — menos seguro. Cada microservicio seguiría siendo resource server. Con el gateway como BFF, los tokens se almacenan en la sesión del servidor y el navegador nunca los ve.
 
 **Patrón BFF — gateway como único cliente OAuth2**
