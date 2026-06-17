@@ -12,13 +12,19 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.userdetails.User;
-import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.core.oidc.OidcScopes;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import com.example.auth.passwordgrant.PasswordGrantAuthenticationConverter;
+import com.example.auth.passwordgrant.PasswordGrantAuthenticationProvider;
+import com.example.auth.passwordgrant.PasswordGrantAuthenticationToken;
+import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.security.oauth2.server.authorization.InMemoryOAuth2AuthorizationService;
+import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService;
 import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
 import org.springframework.security.oauth2.server.authorization.client.InMemoryRegisteredClientRepository;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
@@ -28,11 +34,12 @@ import org.springframework.security.oauth2.server.authorization.config.annotatio
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
 import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
 import org.springframework.security.oauth2.server.authorization.token.JwtEncodingContext;
+import org.springframework.security.oauth2.server.authorization.token.JwtGenerator;
 import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenCustomizer;
 
 import java.security.KeyPair;
 import com.nimbusds.jose.jwk.RSAKey;
-import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
 import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
@@ -54,7 +61,15 @@ public class AuthServerConfig {
     // ------------------------------------------------------------------------------------
     @Bean
     @Order(1)
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http,
+            OAuth2AuthorizationService authorizationService,
+            JwtGenerator jwtGenerator,
+            UserDetailsService userDetailsService,
+            PasswordEncoder passwordEncoder) throws Exception {
+
+        PasswordGrantAuthenticationProvider passwordGrantProvider =
+            new PasswordGrantAuthenticationProvider(userDetailsService, authorizationService, jwtGenerator, passwordEncoder);
+
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
             OAuth2AuthorizationServerConfigurer.authorizationServer();
 
@@ -64,7 +79,11 @@ public class AuthServerConfig {
             // Aplica la configuración del servidor de autorización y activa soporte OIDC
             // OIDC (OpenID Connect) añade el endpoint /userinfo y el scope "openid"
             .with(authorizationServerConfigurer, authorizationServer ->
-                authorizationServer.oidc(Customizer.withDefaults()))
+                authorizationServer
+                    .oidc(Customizer.withDefaults())
+                    .tokenEndpoint(tokenEndpoint -> tokenEndpoint
+                        .accessTokenRequestConverter(new PasswordGrantAuthenticationConverter())
+                        .authenticationProvider(passwordGrantProvider)))
             // Todos los endpoints de este chain requieren autenticación.
             // Sin esto, un usuario anónimo en /oauth2/authorize no lanza AccessDeniedException
             // y la petición llega al servlet sin respuesta, acabando en /error.
@@ -102,23 +121,14 @@ public class AuthServerConfig {
 
 
     // ------------------------------------------------------------------------------------
-    // 2. USUARIOS QUE PUEDEN HACER LOGIN EN ESTE SERVIDOR
+    // 2. ENCODER DE CONTRASEÑAS
     //
-    // Estos son los usuarios finales (personas) que se autentican en el formulario
-    // de login. En producción vendría de base de datos, LDAP, etc.
-    // {noop} indica que la contraseña no está cifrada (solo para desarrollo).
+    // BCrypt porque es el encoder que usa el microservicio users al crear usuarios.
+    // El mismo bean es usado por el formulario de login y el password grant.
     // ------------------------------------------------------------------------------------
     @Bean
-    public UserDetailsService userDetailsService() {
-        UserDetails userDetails = User.withUsername("user")
-            .password("{noop}user")
-            .roles("USER")
-            .build();
-        UserDetails adminDetails = User.withUsername("admin")
-            .password("{noop}admin")
-            .roles("USER", "ADMIN")
-            .build();
-        return new InMemoryUserDetailsManager(userDetails, adminDetails);
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
     }
 
 
@@ -152,15 +162,16 @@ public class AuthServerConfig {
     // En producción esto se guardaría en base de datos.
     // ------------------------------------------------------------------------------------
     @Bean
-    public RegisteredClientRepository registeredClientRepository() {
+    public RegisteredClientRepository registeredClientRepository(PasswordEncoder passwordEncoder) {
         RegisteredClient oidcClient = RegisteredClient.withId(UUID.randomUUID().toString())
             .clientId("gateway")
-            .clientSecret("{noop}secret")
+            .clientSecret(passwordEncoder.encode("secret"))
             .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
             .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)
             .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
             .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
             .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
+            .authorizationGrantType(PasswordGrantAuthenticationToken.PASSWORD)
             .redirectUri("http://localhost:8090/login/oauth2/code/gateway")
             // URI adicional para el flujo de login con Spring Security, que redirige a /authorized tras el login
             // En producción habría que registrar la URI de cada entorno (dev, staging, prod) y cada app cliente.
@@ -204,6 +215,16 @@ public class AuthServerConfig {
         return new ImmutableJWKSet<>(new JWKSet(rsaKey));
     }
 
+    // El JwtGenerator se expone como bean para que el custom password grant pueda reutilizarlo
+    // con el mismo customizer (roles, email). El authorization server lo detecta y lo usa también.
+    @Bean
+    public JwtGenerator jwtGenerator(JWKSource<SecurityContext> jwkSource,
+            OAuth2TokenCustomizer<JwtEncodingContext> tokenCustomizer) {
+        JwtGenerator generator = new JwtGenerator(new NimbusJwtEncoder(jwkSource));
+        generator.setJwtCustomizer(tokenCustomizer);
+        return generator;
+    }
+
     // Necesario para que el endpoint /userinfo pueda validar el Access Token recibido
     @Bean
     public JwtDecoder jwtDecoder(JWKSource<SecurityContext> jwkSource) {
@@ -212,7 +233,21 @@ public class AuthServerConfig {
 
 
     // ------------------------------------------------------------------------------------
-    // 5. CONFIGURACIÓN GENERAL DEL SERVIDOR
+    // 5. ALMACÉN DE AUTORIZACIONES EN MEMORIA
+    //
+    // Spring Authorization Server crea este bean internamente si no se declara,
+    // pero entonces no es inyectable. Al declararlo explícitamente queda disponible
+    // como bean para el custom PasswordGrantAuthenticationProvider.
+    // En producción se sustituiría por JdbcOAuth2AuthorizationService.
+    // ------------------------------------------------------------------------------------
+    @Bean
+    public OAuth2AuthorizationService authorizationService() {
+        return new InMemoryOAuth2AuthorizationService();
+    }
+
+
+    // ------------------------------------------------------------------------------------
+    // 6. CONFIGURACIÓN GENERAL DEL SERVIDOR
     //
     // Permite personalizar las URLs de los endpoints OAuth2 y el issuer (emisor).
     // Si no se especifica issuer, usa automáticamente la URL base del servidor.
@@ -225,6 +260,14 @@ public class AuthServerConfig {
     }
 
 
+    // ------------------------------------------------------------------------------------
+    // 7. PERSONALIZACIÓN DE LOS TOKENS JWT
+    //
+    // Añade información adicional al JWT (claims) que se emite como Access Token.
+    // En este caso añadimos:
+    //   - roles: lista de roles del usuario (authorities)
+    //   - email: email del usuario (si es un DomainUser)
+    // ------------------------------------------------------------------------------------
     @Bean
     public OAuth2TokenCustomizer<JwtEncodingContext> tokenCustomizer() {
         return context -> {
@@ -238,8 +281,13 @@ public class AuthServerConfig {
                     .map(a -> a.getAuthority())
                     .toList()
             );
+            if (principal.getPrincipal() instanceof DomainUser domainUser) {
+                context.getClaims().claim("email", domainUser.getEmail());
+            }
         };
     }
+
+
 
     // Genera un par de claves RSA de 2048 bits al arrancar la aplicación
     private static KeyPair generateRsaKey() {
