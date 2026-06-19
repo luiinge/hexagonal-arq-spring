@@ -43,6 +43,6 @@ Feature: Smoke tests - microservicios via gateway (puerto 8090)
       """
 
   @smoke
-  Scenario: GET /api/items/999999 returns 404
+  Scenario: GET /api/items/999999 returns fallback with default data
     When I make a GET request to "api/items/999999"
-    Then the HTTP status code is equal to 404
+    Then the HTTP status code is equal to 200

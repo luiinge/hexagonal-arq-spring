@@ -62,7 +62,7 @@ eureka:
 # La configuracion 'default' de Resilience4j la tenemos definida en el archivo resilience4j-defaults.yaml, pero si queremos configurar una instancia concreta, lo hacemos aqui.
 # del modulo commons, y se importa en el application.yaml de cada servicio que quiera usarlo, 
 # en este caso el items-service.
-resilience4j: 
+resilience4j:
   circuitbreaker:
     instances:
       itemService:
